@@ -1,16 +1,23 @@
 /** Original procedural pixel artwork for Frontline Command. No external assets. */
-import { UNITS, TERRAINS } from "./shared/engine.mjs";
+import { UNITS, TERRAINS, reachable } from "./shared/engine.mjs";
+import { paintUnitArtwork } from "./unit-art.mjs";
+import { paintDirectionalMotion } from "./unit-direction.mjs";
+import { COMBAT_TIMING, combatDuration } from "./combat-scene.mjs";
+import { deathEffectKind, paintFallingSoldier, paintVehicleBlast } from "./unit-death.mjs";
+import { MOVE_STEP_MS, MOVE_TURN_MS, movementDuration, captureDuration } from "./shared/animation-timing.mjs";
+import { propertyFlagPose } from "./property-flag.mjs";
+
+export { movementDuration } from "./shared/animation-timing.mjs";
 
 export const TEAM_COLORS = ["#ef745e", "#64b7e8", "#edcb66", "#9c8ce6"];
 const TILE = 40;
-const TEAM_PALETTES = [
+export const TEAM_PALETTES = [
   ["#f79a75", "#df634c", "#a83c36", "#713134"],
   ["#91d5ef", "#4ba5d1", "#2e668f", "#29415f"],
   ["#ffe499", "#dfbd56", "#a27b33", "#6a522d"],
   ["#c2acef", "#9278ce", "#634da0", "#44385f"],
 ];
 const GRASS = ["#76966b", "#7d9e70", "#749468", "#809d71"];
-const INK = "#233f40";
 const NEUTRAL = ["#e4ddbd", "#b7b89d", "#777f74", "#505f5a"];
 const hash = (x, y, k = 0) =>
   Math.abs(((x * 92837111) ^ (y * 689287499) ^ (k * 283923481)) >>> 0);
@@ -338,166 +345,29 @@ function paintTile(ctx, tile, neighbors) {
   ctx.restore();
 }
 
-function shadow(ctx, wide = false) {
-  box(ctx, wide ? 3 : 8, 28, wide ? 33 : 24, 5, "rgba(24,45,42,.27)");
-  box(ctx, wide ? 6 : 11, 32, wide ? 27 : 18, 2, "rgba(24,45,42,.14)");
-}
-function tracks(ctx, heavy = false) {
-  const left = heavy ? 5 : 8,
-    right = heavy ? 29 : 27;
-  box(ctx, left, 12, 6, 19, "#263e3e");
-  box(ctx, right, 12, 6, 19, "#263e3e");
-  for (let y = 13; y < 30; y += 4) {
-    box(ctx, left + 1, y, 4, 2, "#71837b");
-    box(ctx, right + 1, y, 4, 2, "#647971");
-  }
-}
-function wheels(ctx) {
-  box(ctx, 6, 16, 5, 6, "#283f3e");
-  box(ctx, 6, 26, 5, 6, "#283f3e");
-  box(ctx, 29, 16, 5, 6, "#283f3e");
-  box(ctx, 29, 26, 5, 6, "#283f3e");
-  box(ctx, 7, 17, 2, 3, "#738075");
-  box(ctx, 30, 27, 2, 3, "#738075");
-}
-function soldier(ctx, p, x, y, mech = false) {
-  box(ctx, x + 3, y + 15, 4, 6, INK);
-  box(ctx, x + 10, y + 15, 4, 6, INK);
-  box(ctx, x + 3, y + 20, 6, 2, "#273c39");
-  box(ctx, x + 10, y + 20, 6, 2, "#273c39");
-  box(ctx, x + 1, y + 7, 14, 10, p[2]);
-  box(ctx, x + 3, y + 6, 10, 9, p[1]);
-  box(ctx, x + 3, y + 7, 4, 5, p[0]);
-  box(ctx, x + 4, y + 2, 9, 7, "#dcb995");
-  box(ctx, x + 11, y + 5, 3, 2, "#374b43");
-  box(ctx, x + 2, y, 12, 5, p[2]);
-  box(ctx, x + 4, y - 2, 8, 4, p[1]);
-  box(ctx, x + 4, y - 1, 6, 1, p[0]);
-  box(ctx, x + 2, y + 4, 13, 2, p[3]);
-  if (mech) {
-    box(ctx, x + 9, y + 9, 13, 5, "#344d48");
-    box(ctx, x + 10, y + 8, 10, 2, "#9aa892");
-    box(ctx, x + 21, y + 8, 3, 7, "#344b44");
-    box(ctx, x + 1, y + 8, 4, 8, "#788968");
-  } else {
-    box(ctx, x + 10, y + 11, 12, 2, "#293f3c");
-    box(ctx, x + 10, y + 13, 4, 3, "#455349");
-    box(ctx, x + 12, y + 10, 3, 2, "#e4c29c");
-  }
-}
-function paintUnit(ctx, unit, x, y, time, selected = false) {
+function paintUnit(ctx, unit, x, y, motion) {
   const p = palette(unit.owner);
   ctx.save();
   ctx.translate(Math.round(x), Math.round(y));
-  if (unit.acted) ctx.globalAlpha = 0.74;
-  shadow(ctx, ["heavy", "rocket"].includes(unit.type));
-  switch (unit.type) {
-    case "infantry":
-      soldier(ctx, p, 6, 10);
-      break;
-    case "mech":
-      soldier(ctx, p, 5, 9, true);
-      break;
-    case "recon":
-      wheels(ctx);
-      box(ctx, 10, 12, 20, 18, p[3]);
-      box(ctx, 10, 13, 18, 15, p[1]);
-      box(ctx, 12, 10, 14, 5, p[0]);
-      box(ctx, 12, 16, 14, 5, "#344d49");
-      box(ctx, 13, 16, 5, 3, "#a9cac0");
-      box(ctx, 20, 16, 5, 3, "#779d93");
-      box(ctx, 12, 22, 14, 6, p[0]);
-      box(ctx, 13, 24, 12, 2, p[1]);
-      box(ctx, 11, 28, 4, 2, "#f5ddb0");
-      box(ctx, 24, 28, 4, 2, "#f5ddb0");
-      box(ctx, 25, 7, 1, 6, INK);
-      break;
-    case "heavy":
-    case "tank": {
-      const heavy = unit.type === "heavy";
-      tracks(ctx, heavy);
-      box(ctx, heavy ? 10 : 12, 11, heavy ? 20 : 16, 20, p[3]);
-      box(ctx, heavy ? 10 : 12, 12, heavy ? 19 : 15, 16, p[1]);
-      box(ctx, heavy ? 10 : 12, 12, heavy ? 18 : 14, 3, p[0]);
-      box(ctx, heavy ? 11 : 13, 26, heavy ? 17 : 13, 3, p[2]);
-      box(ctx, heavy ? 12 : 14, 15, heavy ? 17 : 13, 10, p[3]);
-      box(ctx, heavy ? 12 : 14, 14, heavy ? 16 : 12, 9, p[1]);
-      box(ctx, heavy ? 13 : 15, 14, heavy ? 13 : 9, 2, p[0]);
-      box(ctx, 17, 16, 6, 5, p[2]);
-      box(ctx, 18, 16, 4, 2, p[0]);
-      box(ctx, 23, 17, heavy ? 15 : 13, heavy ? 5 : 4, p[3]);
-      box(ctx, 24, 17, heavy ? 13 : 11, heavy ? 3 : 2, p[0]);
-      if (heavy) {
-        box(ctx, 12, 27, 4, 3, "#efdda9");
-        box(ctx, 24, 27, 4, 3, "#efdda9");
-      }
-      break;
-    }
-    case "artillery":
-      tracks(ctx);
-      box(ctx, 12, 12, 17, 18, p[3]);
-      box(ctx, 12, 13, 16, 14, p[1]);
-      box(ctx, 12, 13, 16, 3, p[0]);
-      box(ctx, 13, 18, 13, 8, p[2]);
-      box(ctx, 14, 17, 11, 4, p[1]);
-      // Long, stepped diagonal barrel distinguishes the indirect gun.
-      box(ctx, 21, 14, 5, 9, p[3]);
-      box(ctx, 24, 11, 5, 8, p[3]);
-      box(ctx, 27, 8, 5, 7, p[3]);
-      box(ctx, 30, 5, 5, 7, p[3]);
-      box(ctx, 22, 14, 3, 7, p[0]);
-      box(ctx, 25, 11, 3, 6, p[0]);
-      box(ctx, 28, 8, 3, 5, p[0]);
-      box(ctx, 31, 5, 3, 5, p[0]);
-      box(ctx, 30, 4, 6, 3, "#324d46");
-      break;
-    case "rocket":
-      wheels(ctx);
-      box(ctx, 10, 11, 20, 20, p[3]);
-      box(ctx, 11, 12, 17, 17, p[1]);
-      box(ctx, 12, 24, 15, 6, p[0]);
-      box(ctx, 13, 25, 13, 3, "#4c6a65");
-      box(ctx, 11, 7, 19, 16, p[2]);
-      box(ctx, 11, 7, 17, 14, p[0]);
-      for (let rx = 13; rx <= 25; rx += 6) {
-        box(ctx, rx, 6, 3, 13, "#445e54");
-        box(ctx, rx, 7, 2, 10, "#d6d7b6");
-        box(ctx, rx, 4, 3, 3, "#4b6054");
-      }
-      box(ctx, 11, 20, 19, 3, p[3]);
-      break;
-    case "apc":
-      tracks(ctx);
-      box(ctx, 11, 11, 19, 20, p[3]);
-      box(ctx, 11, 11, 18, 17, p[1]);
-      box(ctx, 12, 11, 16, 4, p[0]);
-      box(ctx, 13, 16, 13, 9, p[2]);
-      box(ctx, 14, 17, 11, 7, p[1]);
-      box(ctx, 18, 17, 3, 7, "#ece3bd");
-      box(ctx, 16, 19, 7, 3, "#ece3bd");
-      box(ctx, 12, 28, 4, 2, "#efd3a1");
-      box(ctx, 24, 28, 4, 2, "#efd3a1");
-      break;
-    default:
-      soldier(ctx, p, 6, 10);
-  }
+  const resting = motion.action === "idle";
+  if (unit.acted && resting) ctx.globalAlpha = 0.74;
+  box(ctx, 6, 29, 29, 4, "rgba(24,45,42,.25)");
+  box(ctx, 10, 33, 20, 1, "rgba(24,45,42,.15)");
+  paintDirectionalMotion(ctx, unit.type, p, motion.direction || "right", motion.phase, motion.action);
   ctx.globalAlpha = 1;
-  if (unit.acted) {
+  if (unit.acted && resting) {
     box(ctx, 3, 4, 9, 7, "rgba(27,48,43,.85)");
     box(ctx, 5, 7, 2, 2, "#d4ddbb");
     box(ctx, 7, 5, 3, 2, "#d4ddbb");
   }
-  // Always-visible, quiet team bar makes full-health units unambiguous.
-  box(ctx, 11, 34, 20, 2, "#29443f");
-  box(ctx, 11, 34, Math.max(1, Math.ceil((20 * unit.hp) / 10)), 2, p[0]);
-  if (unit.hp < 10) {
-    box(ctx, 28, 27, 10, 10, "#253f3e");
-    ctx.fillStyle = unit.hp <= 3 ? "#ffad87" : "#fff2cf";
-    ctx.font = "bold 9px ui-monospace, monospace";
-    ctx.textBaseline = "middle";
-    ctx.textAlign = "center";
-    ctx.fillText(String(Math.ceil(unit.hp)), 33, 32);
-  }
+  // Show the whole unit's strength, including the full 10/10 state.
+  box(ctx, 9, 32, 29, 7, "#253f3e");
+  box(ctx, 10, 33, Math.max(1, Math.ceil((27 * unit.hp) / 10)), 1, p[0]);
+  ctx.fillStyle = unit.hp <= 3 ? "#ffad87" : "#fff2cf";
+  ctx.font = "bold 8px ui-monospace, monospace";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  ctx.fillText(`${Math.ceil(unit.hp)}/10`, 23.5, 36.5);
   if (unit.cargo) {
     box(ctx, 3, 27, 7, 8, "#263f3b");
     box(ctx, 5, 28, 3, 2, "#ffe4a3");
@@ -559,9 +429,122 @@ function rangeTile(ctx, x, y, isTarget, index) {
     box(ctx, ox + 19, oy + 19, 2, 2, "rgba(199,255,232,.36)");
 }
 
+function heading(from, to) {
+  if (to.x > from.x) return "right";
+  if (to.x < from.x) return "left";
+  return to.y > from.y ? "down" : "up";
+}
+
+export function movementPosition(path, elapsed, startFacing = "right") {
+  if (!path?.length) return null;
+  if (path.length === 1)
+    return { ...path[0], direction: startFacing, turning: false, done: true };
+  let remaining = Math.max(0, elapsed), previous = startFacing;
+  for (let i = 0; i < path.length - 1; i++) {
+    const from = path[i], to = path[i + 1];
+    const direction = heading(from, to);
+    if (direction !== previous) {
+      if (remaining < MOVE_TURN_MS)
+        return {
+          x: from.x, y: from.y,
+          direction: remaining < MOVE_TURN_MS / 2 ? previous : direction,
+          turning: true, done: false,
+        };
+      remaining -= MOVE_TURN_MS;
+    }
+    if (remaining < MOVE_STEP_MS) {
+      const local = remaining / MOVE_STEP_MS;
+      const eased = local - (Math.sin(local * Math.PI * 2) * .35) / (Math.PI * 2);
+      return {
+        x: from.x + (to.x - from.x) * eased,
+        y: from.y + (to.y - from.y) * eased,
+        direction, turning: false, done: false,
+      };
+    }
+    remaining -= MOVE_STEP_MS;
+    previous = direction;
+  }
+  return { ...path[path.length - 1], direction: previous, turning: false, done: true };
+}
+
+// Reconstruct one exchange from consecutive authoritative game states. This also
+// works for AI and LAN actions, where the local client has no pending command.
+export function capturesFromStates(before, after) {
+  if (!before || !after || before.mapId !== after.mapId) return [];
+  const oldUnits = new Map(before.units.map((unit) => [unit.id, unit]));
+  const oldTiles = new Map((before.tiles || []).map((tile) => [tileKey(tile.x, tile.y), tile]));
+  const tiles = new Map((after.tiles || []).map((tile) => [tileKey(tile.x, tile.y), tile]));
+  return after.units.flatMap((unit) => {
+    const old = oldUnits.get(unit.id);
+    const key = tileKey(unit.x, unit.y);
+    const tile = tiles.get(key), previous = oldTiles.get(key);
+    if (!old || old.acted || !unit.acted || !UNITS[unit.type]?.capture ||
+      !tile || !previous || !["city", "factory", "hq"].includes(tile.type)) return [];
+    if (tile.capture === previous.capture && tile.captureBy === previous.captureBy &&
+      tile.owner === previous.owner) return [];
+    return [{ unit, tile, previousTile: previous }];
+  });
+}
+
+export function combatFromStates(before, after) {
+  if (!before || !after || before.mapId !== after.mapId) return null;
+  const capturing = new Set(capturesFromStates(before, after).map(({ unit }) => unit.id));
+  const next = new Map(after.units.map((unit) => [unit.id, unit]));
+  const damaged = before.units.filter((unit) => {
+    const current = next.get(unit.id);
+    return !current || current.hp < unit.hp;
+  });
+  const actors = before.units.filter((unit) => {
+    const current = next.get(unit.id);
+    return !unit.acted && (current?.acted || (!current && damaged.length > 1));
+  });
+  for (const attacker of actors) {
+    if (capturing.has(attacker.id)) continue;
+    const current = next.get(attacker.id);
+    const definition = UNITS[attacker.type];
+    for (const defender of damaged) {
+      if (defender.owner === attacker.owner || defender.id === attacker.id)
+        continue;
+      const inRange = (position) => {
+        const distance = Math.abs(position.x - defender.x) + Math.abs(position.y - defender.y);
+        return distance >= definition.minRange && distance <= definition.maxRange;
+      };
+      let origin = current || attacker;
+      if (!inRange(origin) && !current && before.players && before.tiles)
+        origin = reachable(before, attacker.id).find(inRange);
+      if (origin && !inRange(origin)) origin = null;
+      if (!origin) continue;
+      const defenderAfter = next.get(defender.id);
+      return {
+        attacker: { ...attacker, x: origin.x, y: origin.y, hpAfter: current?.hp ?? 0 },
+        defender: { ...defender, hpAfter: defenderAfter?.hp ?? 0 },
+        damage: defender.hp - (defenderAfter?.hp ?? 0),
+        counter: attacker.hp - (current?.hp ?? 0),
+      };
+    }
+  }
+  return null;
+}
+
+// Keep the old sprite and HP on the map until that side is hit in the duel.
+export function combatDisplayUnits(state, visual, time) {
+  if (!visual || time >= visual.endAt) return state.units;
+  const units = state.units.slice();
+  for (const { unit, hitAt } of [
+    { unit: visual.attacker, hitAt: visual.counterHitAt },
+    { unit: visual.defender, hitAt: visual.defenderHitAt },
+  ]) {
+    if (time >= hitAt) continue;
+    const index = units.findIndex((item) => item.id === unit.id);
+    if (index < 0) units.push({ ...unit });
+    else units[index] = { ...units[index], hp: unit.hp, acted: unit.acted };
+  }
+  return units;
+}
+
 export function createRenderer(
   canvas,
-  { onTile = () => {}, onHover = () => {} } = {},
+  { onTile = () => {}, onHover = () => {}, onCombat = () => {}, onCapture = () => {}, paintPropertyFlag = null, previewUnitMotion = null } = {},
 ) {
   if (!canvas || typeof canvas.getContext !== "function")
     throw new Error("需要 Canvas 画布");
@@ -587,6 +570,9 @@ export function createRenderer(
   let previousState = null;
   let movement = new Map();
   let explosions = [];
+  let actionEvents = [];
+  let captureVisuals = new Map();
+  let combatVisual = null;
   let unitById = new Map();
   let lastTerrainSignature = "";
   const reducedMotion =
@@ -623,7 +609,10 @@ export function createRenderer(
     terrainCtx.fillRect(0, 0, logicalWidth, logicalHeight);
     const lookup = new Map(state.tiles.map((t) => [tileKey(t.x, t.y), t]));
     for (const tile of state.tiles) {
-      paintTile(terrainCtx, tile, {
+      const visual = captureVisuals.get(tileKey(tile.x, tile.y));
+      const paintedTile = visual?.completed
+        ? { ...tile, owner: visual.previousOwner } : tile;
+      paintTile(terrainCtx, paintedTile, {
         up: lookup.get(tileKey(tile.x, tile.y - 1)),
         down: lookup.get(tileKey(tile.x, tile.y + 1)),
         left: lookup.get(tileKey(tile.x - 1, tile.y)),
@@ -643,30 +632,123 @@ export function createRenderer(
         previousState.mapId === state.mapId &&
         previousState.width === state.width
       ) {
+        const exchange = combatFromStates(previousState, state);
         const oldUnits = new Map(previousState.units.map((u) => [u.id, u]));
-        movement = new Map();
         for (const u of state.units) {
           const old = oldUnits.get(u.id);
-          if (old && (old.x !== u.x || old.y !== u.y))
-            movement.set(u.id, {
-              x: old.x,
-              y: old.y,
-              start: now,
-              duration: Math.min(
-                440,
-                140 + (Math.abs(old.x - u.x) + Math.abs(old.y - u.y)) * 45,
-              ),
+          if (old && (old.x !== u.x || old.y !== u.y)) {
+            const route = reachable(previousState, old.id).find(
+              (cell) => cell.x === u.x && cell.y === u.y,
+            );
+            if (route?.path.length > 1)
+              movement.set(u.id, {
+                path: route.path,
+                start: now,
+                startFacing: "right",
+                duration: movementDuration(route.path),
+              });
+          }
+          if (old && old.type === "apc" && !old.acted && u.acted) {
+            const move = movement.get(u.id);
+            const delay = move ? Math.max(0, move.start + move.duration - now) : 0;
+            actionEvents.push({ id: u.id, action: "supply", start: now + delay, duration: 1050 });
+          }
+        }
+        for (const { unit, tile, previousTile } of capturesFromStates(previousState, state)) {
+          const move = movement.get(unit.id);
+          const delay = move ? Math.max(0, move.start + move.duration - now) : 0;
+          const completed = tile.owner === unit.owner && previousTile.owner !== unit.owner;
+          const capture = {
+            owner: unit.owner,
+            previousOwner: previousTile.owner,
+            progressBefore: previousTile.captureBy === unit.owner ? 20 - previousTile.capture : 0,
+            progressAfter: completed ? 20 : 20 - tile.capture,
+            completed,
+            start: now + delay,
+            duration: captureDuration(completed),
+          };
+          captureVisuals.set(tileKey(tile.x, tile.y), capture);
+          if (completed) terrainDirty = true;
+          onCapture({
+            unit,
+            tile,
+            previousOwner: capture.previousOwner,
+            progressBefore: capture.progressBefore,
+            progressAfter: capture.progressAfter,
+            completed,
+            delay,
+            duration: capture.duration,
+          });
+        }
+        const attackingMove = exchange ? movement.get(exchange.attacker.id) : null;
+        const travelDelay = attackingMove
+          ? Math.max(0, attackingMove.start + attackingMove.duration - now)
+          : 0;
+        const battleStart = now + travelDelay;
+        if (exchange) {
+          const attackerAt = state.units.find((unit) => unit.id === exchange.attacker.id) || exchange.attacker;
+          const terrainAt = (unit) => state.tiles.find((tile) => tile.x === unit.x && tile.y === unit.y)?.type || "plain";
+          combatVisual = {
+            attacker: { ...exchange.attacker, x: attackerAt.x, y: attackerAt.y },
+            defender: exchange.defender,
+            defenderHitAt: battleStart + COMBAT_TIMING.firstHit,
+            counterHitAt: exchange.counter > 0 ? battleStart + COMBAT_TIMING.counterHit : Infinity,
+            endAt: battleStart + combatDuration(exchange.counter),
+          };
+          onCombat({
+            ...exchange,
+            attackerTerrain: terrainAt(attackerAt),
+            defenderTerrain: terrainAt(exchange.defender),
+            delay: travelDelay,
+          });
+        }
+        if (exchange) {
+          const { attacker, defender, counter } = exchange;
+          const attackerAt = state.units.find((unit) => unit.id === attacker.id) || attacker;
+          actionEvents.push({
+            id: attacker.id, action: "attack", start: battleStart + COMBAT_TIMING.firstFire - 180, duration: 450,
+            direction: heading(attackerAt, defender),
+          });
+          actionEvents.push({ id: defender.id, action: "hit", start: combatVisual.defenderHitAt, duration: 500 });
+          if (counter > 0) {
+            actionEvents.push({
+              id: defender.id, action: "attack", start: battleStart + COMBAT_TIMING.counterFire - 180, duration: 450,
+              direction: heading(defender, attackerAt),
             });
-          if (old && old.hp > u.hp)
-            explosions.push({ x: u.x, y: u.y, start: now });
+            actionEvents.push({ id: attacker.id, action: "hit", start: combatVisual.counterHitAt, duration: 500 });
+          }
+        }
+        for (const u of state.units) {
+          const old = oldUnits.get(u.id);
+          if (old && old.hp > u.hp) {
+            const start = exchange?.defender.id === u.id
+              ? combatVisual.defenderHitAt
+              : exchange?.attacker.id === u.id && exchange.counter > 0
+                ? combatVisual.counterHitAt : now;
+            explosions.push({ x: u.x, y: u.y, start, destroyed: false });
+          }
         }
         for (const old of oldUnits.values()) {
-          if (!state.units.some((u) => u.id === old.id))
-            explosions.push({ x: old.x, y: old.y, start: now });
+          if (exchange && (old.id === exchange.attacker.id || old.id === exchange.defender.id) &&
+            !state.units.some((u) => u.id === old.id)) {
+            const position = old.id === exchange.attacker.id ? combatVisual.attacker : old;
+            explosions.push({
+              x: position.x, y: position.y, type: old.type, owner: old.owner, destroyed: true,
+              start: exchange?.defender.id === old.id
+                ? combatVisual.defenderHitAt
+                : exchange?.attacker.id === old.id && exchange.counter > 0
+                  ? combatVisual.counterHitAt : now,
+            });
+          }
         }
+        for (const id of movement.keys())
+          if (!state.units.some((u) => u.id === id) && combatVisual?.attacker.id !== id) movement.delete(id);
       } else {
         movement.clear();
         explosions = [];
+        actionEvents = [];
+        captureVisuals.clear();
+        combatVisual = null;
       }
       unitById = new Map(state.units.map((u) => [u.id, u]));
       previousState = state;
@@ -704,13 +786,19 @@ export function createRenderer(
         }
       }
       if (["city", "factory", "hq"].includes(tile.type)) {
-        const p = palette(tile.owner);
-        const flutter = Math.floor(time / 420 + tile.x + tile.y) % 2;
-        box(ctx, x + 4, y + 3, 1, 14, "#344f43");
-        box(ctx, x + 5, y + 3, 8, 5, p[2]);
-        box(ctx, x + 5, y + 3, 7, 3, p[0]);
-        box(ctx, x + 11, y + 3 + flutter, 3, 4, p[1]);
-        box(ctx, x + 3, y + 2, 3, 2, "#e3dab0");
+        if (paintPropertyFlag?.(ctx, tile, time) !== true) {
+          const pose = propertyFlagPose(tile, captureVisuals.get(tileKey(tile.x, tile.y)), time);
+          if (pose.owner != null) {
+            const p = palette(pose.owner);
+            const fy = Math.round(y + pose.offset);
+            box(ctx, x + 4, y - 17, 2, 35, "#304b43");
+            box(ctx, x + 3, y - 18, 4, 2, "#eee1ba");
+            box(ctx, x + 6, fy, 11, 7, p[2]);
+            box(ctx, x + 6, fy, 10, 3, p[0]);
+            box(ctx, x + 14, fy + 3, 4, 3, p[1]);
+            box(ctx, x + 6, fy + 6, 8, 1, p[3]);
+          }
+        }
         if (tile.capture < 20 && tile.captureBy != null) {
           box(ctx, x + 5, y + 36, 30, 3, "#324d44");
           box(
@@ -749,6 +837,11 @@ export function createRenderer(
     if (destroyed || !scene.state || !logicalWidth) return;
     if (reducedMotion) time = 0;
     const state = scene.state;
+    for (const [key, visual] of captureVisuals)
+      if (time >= visual.start + visual.duration) {
+        captureVisuals.delete(key);
+        if (visual.completed) terrainDirty = true;
+      }
     if (terrainDirty) rebuildTerrain();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
@@ -763,30 +856,67 @@ export function createRenderer(
       if (u) rangeTile(ctx, u.x, u.y, true, 0);
     }
     paintPath();
+    actionEvents = actionEvents.filter((event) => time < event.start + event.duration);
+    if (combatVisual && time >= combatVisual.endAt) combatVisual = null;
+    const displayUnits = combatDisplayUnits(state, combatVisual, time);
     const loadedIds = new Set(
       state.units
         .filter((u) => u.cargo)
         .map((u) => (typeof u.cargo === "string" ? u.cargo : u.cargo.id)),
     );
-    const units = state.units
+    const units = displayUnits
       .filter((u) => !loadedIds.has(u.id) && !u.carriedBy && !u.transportId)
       .slice()
       .sort((a, b) => a.y - b.y || a.x - b.x);
     for (const u of units) {
       let ux = u.x * TILE,
         uy = u.y * TILE;
+      let motion = {
+        action: "idle",
+        phase: (time / (u.type === "mech" ? 2100 : 1500) + (hash(u.x, u.y) % 7) / 7) % 1,
+        direction: "right",
+      };
       const move = movement.get(u.id);
+      let moving = false;
       if (move) {
-        const t = Math.min(1, Math.max(0, (time - move.start) / move.duration));
-        const eased = 1 - Math.pow(1 - t, 2);
-        ux = (move.x + (u.x - move.x) * eased) * TILE;
-        uy = (move.y + (u.y - move.y) * eased) * TILE;
-        if (t >= 1) movement.delete(u.id);
+        const elapsed = Math.max(0, time - move.start);
+        const position = movementPosition(move.path, elapsed, move.startFacing);
+        ux = position.x * TILE;
+        uy = position.y * TILE;
+        if (position.done) movement.delete(u.id);
+        else {
+          const gaitMs = u.type === "mech" ? 600
+            : u.type === "infantry" ? 480 : 400;
+          motion = {
+            action: position.turning ? "turn" : "move",
+            phase: (elapsed % gaitMs) / gaitMs,
+            direction: position.direction,
+          };
+          moving = true;
+        }
       }
-      paintUnit(ctx, u, ux, uy, time, scene.selectedId === u.id);
+      const event = [...actionEvents].reverse().find((item) =>
+        item.id === u.id && time >= item.start && time < item.start + item.duration,
+      );
+      if (event && !moving)
+        motion = {
+          action: event.action,
+          phase: (time - event.start) / event.duration,
+          direction: event.direction || "right",
+        };
+      paintUnit(ctx, u, ux, uy, previewUnitMotion?.(u, time) || motion);
     }
-    explosions = explosions.filter((e) => time - e.start < 430);
+    explosions = explosions.filter((e) => time - e.start < (e.destroyed ? 1450 : 430));
     for (const e of explosions) {
+      if (time < e.start) continue;
+      if (e.destroyed) {
+        const age = time - e.start;
+        if (deathEffectKind(e.type) === "fall")
+          paintFallingSoldier(ctx, e.type, palette(e.owner), age, e.x * TILE, e.y * TILE);
+        else
+          paintVehicleBlast(ctx, age, e.x * TILE + 20, e.y * TILE + 20, .55);
+        continue;
+      }
       const t = (time - e.start) / 430;
       const cx = e.x * TILE + 20,
         cy = e.y * TILE + 20;
@@ -973,6 +1103,8 @@ export function createRenderer(
       window.removeEventListener("resize", onWindowResize);
       movement.clear();
       explosions = [];
+      actionEvents = [];
+      captureVisuals.clear();
     },
   };
 }

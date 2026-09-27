@@ -9,6 +9,7 @@ import {
   previewCombat,
 } from "./shared/engine.mjs";
 import { createRenderer, TEAM_COLORS } from "./renderer.mjs";
+import { paintCombatScene, COMBAT_TIMING, combatDuration } from "./combat-scene.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) =>
@@ -236,8 +237,77 @@ heroRenderer.setScene({
   preview: null,
 });
 $("#hero-map-name").textContent = getMap("river").name;
+const combatStage = $("#combat-stage");
+const combatScene = $("#combat-scene");
+const combatSceneCtx = combatScene.getContext("2d");
+let combatTimers = [];
+let combatFrame = null;
+function hideCombat() {
+  for (const timer of combatTimers) clearTimeout(timer);
+  combatTimers = [];
+  if (combatFrame !== null) cancelAnimationFrame(combatFrame);
+  combatFrame = null;
+  combatStage.hidden = true;
+  combatStage.className = "combat-stage";
+}
+function afterCombat(delay, action) {
+  combatTimers.push(setTimeout(action, delay));
+}
+function showCombat({ attacker, defender, damage, counter, attackerTerrain, defenderTerrain, delay = 0 }) {
+  if (screen !== "battle") return;
+  hideCombat();
+  const battle = { attacker, defender, damage, counter, attackerTerrain, defenderTerrain };
+  if (delay > 0) {
+    afterCombat(delay, () => showCombat(battle));
+    return;
+  }
+  combatStage.hidden = false;
+  $("#combat-caption").textContent = "准备攻击";
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reducedMotion) {
+    paintCombatScene(combatSceneCtx, { ...battle, elapsed: combatDuration(counter) });
+    $("#combat-caption").textContent = `造成 ${damage} 点伤害${counter ? ` · 反击 ${counter} 点` : ""}`;
+    afterCombat(850, hideCombat);
+    return;
+  }
+  const started = performance.now();
+  const animate = (now) => {
+    if (combatStage.hidden) return;
+    const elapsed = now - started;
+    paintCombatScene(combatSceneCtx, { ...battle, elapsed });
+    const caption = elapsed < COMBAT_TIMING.firstFire ? "准备攻击"
+      : elapsed < COMBAT_TIMING.firstHit ? `${UNITS[attacker.type].name}开火！`
+        : elapsed < COMBAT_TIMING.counterFire || !counter ? `命中 · 减少 ${damage} 点兵力`
+          : elapsed < COMBAT_TIMING.counterHit ? `${UNITS[defender.type].name}反击！`
+            : `反击 · 减少 ${counter} 点兵力`;
+    $("#combat-caption").textContent = caption;
+    if (elapsed >= combatDuration(counter)) {
+      hideCombat();
+      return;
+    }
+    combatFrame = requestAnimationFrame(animate);
+  };
+  combatFrame = requestAnimationFrame(animate);
+}
+$("#skip-combat").onclick = hideCombat;
+let victoryTimer = null;
+function clearVictoryDelay() {
+  if (victoryTimer !== null) clearTimeout(victoryTimer);
+  victoryTimer = null;
+}
+function onMapCapture(capture) {
+  if (!capture.completed || room?.state?.phase !== "finished" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  clearVictoryDelay();
+  victoryTimer = setTimeout(() => {
+    victoryTimer = null;
+    if (screen === "battle" && room?.state?.phase === "finished") showVictory();
+  }, capture.delay + capture.duration);
+}
 const battleRenderer = createRenderer($("#battle-canvas"), {
   onTile: handleTile,
+  onCombat: showCombat,
+  onCapture: onMapCapture,
   onHover(x, y) {
     hoveredTile = { x, y };
     if (!room?.state) return;
@@ -387,6 +457,8 @@ function receiveRoom(next) {
   const oldId = room?.id;
   room = next;
   if (room.phase === "lobby") {
+    hideCombat();
+    clearVictoryDelay();
     if (screen !== "lobby") closeModal();
     previousTurn = null;
     victoryShown = null;
@@ -405,7 +477,9 @@ function receiveRoom(next) {
       previousTurn = turnKey;
       showTurnBanner();
     }
-    if (room.state?.phase === "finished") showVictory();
+    if (room.state?.phase === "finished") {
+      if (victoryTimer === null) showVictory();
+    }
   }
   $("#footer-message").textContent =
     `房间 ${room.id} · ${room.mode === "teams" ? "联合行动" : "自由混战"} · 每一步都已同步`;
@@ -612,7 +686,7 @@ function renderSelection() {
       }
       commands += `<button data-command="cancel">${destination || targetId ? "取消预选" : "取消选择"}</button>`;
     }
-    panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">${esc(names[unit.owner])} / UNIT ${esc(unit.id)}</span><h2>${esc(definition.name)}</h2></div><span class="hp-badge">${unit.hp}<small>HP / 10</small></span></div><div class="selection-content"><div class="unit-stats"><div><span>移动 / 射程</span><strong>${definition.move} / ${definition.minRange}–${definition.maxRange}</strong></div><div><span>弹药 / 燃料</span><strong>${unit.ammo === null || unit.ammo === undefined ? "∞" : unit.ammo} / ${Math.floor(unit.fuel || 0)}</strong></div><div><span>地形防御</span><strong>${TERRAINS[tile.type]?.defense || 0} ★</strong></div></div>${combat}<p>${can ? (targetId ? "确认后结算伤害与反击。" : destination ? "目的地已预选。选择命令后执行；点击红色目标可攻击。" : "点击青色格预选移动；点击红色敌军预览攻击。") : unit.acted ? "该部队已行动，下个己方回合恢复。" : unit.owner !== session.seat ? "观察敌我部署，利用射程与地形安排推进。" : "等待己方回合后可下达指令。"}</p>${["city", "factory", "hq"].includes(tile.type) ? `<p>据点：${tile.owner === null ? "中立" : esc(names[tile.owner])} · 剩余占领值 ${tile.capture ?? 20}</p>` : ""}<div class="command-list">${commands}</div></div>`;
+    panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">${esc(names[unit.owner])} / UNIT ${esc(unit.id)}</span><h2>${esc(definition.name)}</h2></div><span class="hp-badge">${unit.hp}<small>兵力 / 10</small></span></div><div class="selection-content"><div class="unit-stats"><div><span>移动 / 射程</span><strong>${definition.move} / ${definition.minRange}–${definition.maxRange}</strong></div><div><span>弹药 / 燃料</span><strong>${unit.ammo === null || unit.ammo === undefined ? "∞" : unit.ammo} / ${Math.floor(unit.fuel || 0)}</strong></div><div><span>地形防御</span><strong>${TERRAINS[tile.type]?.defense || 0} ★</strong></div></div>${combat}<p>${can ? (targetId ? "确认后结算伤害与反击。" : destination ? "目的地已预选。选择命令后执行；点击红色目标可攻击。" : "点击青色格预选移动；点击红色敌军预览攻击。") : unit.acted ? "该部队已行动，下个己方回合恢复。" : unit.owner !== session.seat ? "观察敌我部署，利用射程与地形安排推进。" : "等待己方回合后可下达指令。"}</p>${["city", "factory", "hq"].includes(tile.type) ? `<p>据点：${tile.owner === null ? "中立" : esc(names[tile.owner])} · 剩余占领值 ${tile.capture ?? 20}</p>` : ""}<div class="command-list">${commands}</div></div>`;
     panel.querySelectorAll("[data-command]").forEach(
       (button) =>
         (button.onclick = () => {
@@ -800,6 +874,8 @@ $("#battle-invite").onclick = () => {
   };
 };
 function goHome() {
+  hideCombat();
+  clearVictoryDelay();
   eventSource?.close();
   eventSource = null;
   session = null;

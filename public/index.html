@@ -202,6 +202,11 @@
                 tabindex="0"
                 aria-label="战术地图：点击己方单位选择，点击高亮格移动"
               ></canvas>
+              <div id="combat-stage" class="combat-stage" hidden aria-live="polite">
+                <div class="combat-stage-head"><span>交战 / ENGAGEMENT</span><button id="skip-combat" type="button" aria-label="跳过战斗动画">跳过 ›</button></div>
+                <canvas id="combat-scene" width="640" height="300" aria-label="交战双方及其所在战场"></canvas>
+                <div id="combat-caption" class="combat-caption"></div>
+              </div>
               <div id="turn-banner" class="turn-banner hidden"></div>
             </div>
             <div class="map-legend">

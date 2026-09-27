@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createServer } from "../server.mjs";
+import { chooseAIAction } from "../public/shared/engine.mjs";
+import { actionAnimationDuration } from "../public/shared/animation-timing.mjs";
 
 async function setup(t, options = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), "field-command-server-"));
@@ -13,6 +15,7 @@ async function setup(t, options = {}) {
     host: "127.0.0.1",
     dataDir,
     aiDelay: 5,
+    aiAnimationPacing: false,
     ...options,
   });
   const apps = [app];
@@ -336,7 +339,7 @@ test(
     assert.equal(pending.room.state.currentPlayer, 1);
     await app.close();
     const restarted = track(
-      await createServer({ port: 0, host: "127.0.0.1", dataDir, aiDelay: 2 }),
+      await createServer({ port: 0, host: "127.0.0.1", dataDir, aiDelay: 2, aiAnimationPacing: false }),
     );
     const resumeApi = client(restarted.url);
     const finishedTurn = await waitFor(async () => {
@@ -350,6 +353,32 @@ test(
     assert.ok(finishedTurn.room.state.players[1].funds >= 0);
   },
 );
+
+test("AI broadcasts the next instruction only after the previous animation timeline", async (t) => {
+  const { api } = await setup(t, { aiDelay: 20, aiAnimationPacing: true });
+  const host = await api("/api/rooms", { name: "动画节奏", mapId: "training" }, 201);
+  const id = host.room.id;
+  await api(`/api/rooms/${id}/start`, { token: host.token });
+  const pending = await api(`/api/rooms/${id}/action`, {
+    token: host.token, action: { type: "endTurn" },
+  });
+  const firstAction = chooseAIAction(pending.room.state, 1);
+  assert.equal(firstAction.type, "move");
+  const first = await waitFor(async () => {
+    const result = await api(`/api/rooms/${id}?token=${host.token}`);
+    return result.room.revision > pending.room.revision ? result.room : null;
+  });
+  const animation = actionAnimationDuration(pending.room.state, first.state, firstAction);
+  assert.ok(animation > 150);
+  await delay(100);
+  const during = await api(`/api/rooms/${id}?token=${host.token}`);
+  assert.equal(during.room.revision, first.revision);
+  const next = await waitFor(async () => {
+    const result = await api(`/api/rooms/${id}?token=${host.token}`);
+    return result.room.revision > first.revision ? result.room : null;
+  }, animation + 2000);
+  assert.equal(next.revision, first.revision + 1);
+});
 
 test("API rejects cross-origin, malformed, oversized requests and keeps private files inaccessible", async (t) => {
   const { app, api } = await setup(t);

@@ -13,6 +13,7 @@ import {
   validateState,
 } from "./public/shared/engine.mjs";
 import { createSaveStore } from "./save-store.mjs";
+import { actionAnimationDuration } from "./public/shared/animation-timing.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = resolve(ROOT, "public");
@@ -173,6 +174,7 @@ export async function createServer({
   host = "0.0.0.0",
   dataDir = resolve(ROOT, "data"),
   aiDelay = 500,
+  aiAnimationPacing = true,
 } = {}) {
   const rooms = new Map();
   const connections = new Map();
@@ -248,7 +250,7 @@ export async function createServer({
     mutationQueue = operation.catch(() => {});
     return operation;
   }
-  async function commit(room, { isNew = false } = {}) {
+  async function commit(room, { isNew = false, nextAiDelay = aiDelay } = {}) {
     if (!isNew) room.revision += 1;
     room.updatedAt = new Date().toISOString();
     const snapshot = [...rooms.values()].map((current) =>
@@ -259,10 +261,10 @@ export async function createServer({
     await store.save(snapshot);
     rooms.set(room.id, room);
     broadcast(room);
-    scheduleAI(room);
+    scheduleAI(room, nextAiDelay);
     return publicRoom(room);
   }
-  function scheduleAI(room) {
+  function scheduleAI(room, delay = aiDelay) {
     clearTimeout(aiTimers.get(room.id));
     aiTimers.delete(room.id);
     if (
@@ -288,8 +290,9 @@ export async function createServer({
         steps.count += 1;
         aiSteps.set(current.id, steps);
         const next = structuredClone(current);
+        let action;
         try {
-          const action =
+          action =
             steps.count > 80
               ? { type: "endTurn" }
               : chooseAIAction(next.state, seat);
@@ -299,9 +302,12 @@ export async function createServer({
           next.state = applyAction(next.state, seat, { type: "endTurn" });
         }
         next.phase = next.state.phase;
-        await commit(next);
+        const animation = aiAnimationPacing && action
+          ? actionAnimationDuration(current.state, next.state, action)
+          : 0;
+        await commit(next, { nextAiDelay: Math.max(aiDelay, animation + 150) });
       }).catch((error) => console.error(`电脑回合未能保存：${error.message}`));
-    }, aiDelay);
+    }, delay);
     timer.unref();
     aiTimers.set(room.id, timer);
   }
