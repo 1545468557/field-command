@@ -45,33 +45,36 @@ export function commandMenuPosition({
     halfH = menuH / 2;
   const unitHalf = cell / 2;
 
-  // 水平上会不会压住单位所在格（留 4px 缝）
-  const collides = (x) => Math.abs(x - anchorX) < halfW + unitHalf + 4;
+  // ① 选边：贴**离单位近的那条边**。这一条不再因为「压住单位」而翻面——
+  //    翻面的代价是菜单甩到屏幕另一端，鼠标要横穿整屏，实测比压住更难用。
+  const onLeft = anchorX < vw / 2;
+  const cx = onLeft ? EDGE_GAP + halfW : vw - EDGE_GAP - halfW;
 
-  // 先按「单位在哪半边」选边；但如果那个位置正好压住单位本身
-  // （单位贴着屏幕边缘时必然发生），就翻到对面去。
-  // 对面也压住的话就维持原样——那是「视口太窄 + 菜单太宽」，
-  // 已经没有更好的位置了，硬翻只会更难看。
-  let onLeft = anchorX < vw / 2;
-  let cx = onLeft ? EDGE_GAP + halfW : vw - EDGE_GAP - halfW;
-  if (collides(cx)) {
-    const other = onLeft ? vw - EDGE_GAP - halfW : EDGE_GAP + halfW;
-    if (!collides(other)) {
-      onLeft = !onLeft;
-      cx = other;
-    }
-  }
-
-  // 垂直：跟住单位高度，但夹紧在两个「家具」之间。
-  //   上界 = 顶栏 + 余量；下界 = 说明栏 + 贴左时还要躲开单位栏。
+  // ② 垂直：先跟住单位高度，夹紧在两个「家具」之间。
+  //    上界 = 顶栏 + 余量；下界 = 说明栏 + 贴左时还要躲开单位栏。
   const shelfH = onLeft ? UNIT_SHELF_H : 0;
   const minY = TOPBAR_H + halfH + 6;
   const maxY = vh - COMMAND_BAR_H - shelfH - halfH - 6;
-  // 视口太矮导致上下界打架时，取中点——宁可压一点家具，也不能算出 NaN。
-  const cy =
-    maxY > minY
-      ? Math.max(minY, Math.min(anchorY, maxY))
-      : (minY + maxY) / 2;
+  // 视口太矮导致上下界打架时取中点——宁可压一点家具，也不能算出 NaN。
+  const clampY = (y) =>
+    maxY > minY ? Math.max(minY, Math.min(y, maxY)) : (minY + maxY) / 2;
+  let cy = clampY(anchorY);
+
+  // ③ 贴边时菜单和单位格**在水平方向必然重叠**（菜单半宽约 88px，
+  //    单位格半宽只有 20px）。这时不翻面，改成**垂直错开**：
+  //    推到单位格下沿之下（够不着就推到上沿之上）。
+  //    菜单留在近侧边缘、离单位只差一个身位，同时不盖住它和它的邻格。
+  const hOverlap = Math.abs(cx - anchorX) < halfW + unitHalf;
+  if (hOverlap) {
+    const below = anchorY + unitHalf + halfH + 6;
+    const above = anchorY - unitHalf - halfH - 6;
+    // ⚠️ 错开后仍要各自夹紧了再用。第一版漏了上面那支的夹紧——
+    //    「单位贴着屏幕底部」时 above 会算出 822 > maxY(812)，
+    //    菜单底部直接顶穿说明栏（测试第 8 条抓到的越界）。
+    if (below <= maxY) cy = Math.max(below, minY);
+    else if (above >= minY) cy = Math.min(above, maxY);
+    // 两边都放不下：说明视口又矮又挤，维持 clamp 结果（会压一点，但没有更好的解）
+  }
 
   return { cx, cy, onLeft };
 }
