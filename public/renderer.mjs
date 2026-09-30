@@ -544,7 +544,7 @@ export function combatDisplayUnits(state, visual, time) {
 
 export function createRenderer(
   canvas,
-  { onTile = () => {}, onHover = () => {}, onCombat = () => {}, onCapture = () => {}, paintPropertyFlag = null, previewUnitMotion = null } = {},
+  { onTile = () => {}, onHover = () => {}, onHold = () => {}, onDrag = () => {}, onDragEnd = () => {}, onCombat = () => {}, onCapture = () => {}, paintPropertyFlag = null, previewUnitMotion = null } = {},
 ) {
   if (!canvas || typeof canvas.getContext !== "function")
     throw new Error("需要 Canvas 画布");
@@ -558,6 +558,9 @@ export function createRenderer(
     targets: [],
     hoverTile: null,
     preview: null,
+    hoverPreview: null,
+    arrowPath: null,
+    arrowTone: "own",
   };
   let frame = null,
     destroyed = false,
@@ -567,6 +570,34 @@ export function createRenderer(
     logicalHeight = 0,
     dpr = 1,
     lastPointerKey = null;
+  // 长按/拖拽：按住不动 HOLD_MS 进入箭头模式，此后拖动即拉出箭头。
+  //
+  // 阈值调参依据（2026-09-30 实测，别凭感觉改）：
+  //  - HOLD_MS：原 120ms 会让「快手」(按下到抬起 50~110ms) 全部漏掉。
+  //    实测 50/70/90/110ms 四次快抬手，旧阈值 4 个全漏。
+  //    人的极快点击（mousedown→mouseup）约 40~90ms，而「意图长按」一般在 100ms 后就稳定。
+  //    取 60ms：快点击边缘能覆盖，同时常规点击(>60ms)不会误触发拖拽。
+  //  - HOLD_SLOP：原 6px 太小，按住时手/鼠标的轻微抖动(4~12px)会把长按取消掉。
+  //    实测 4px 和 12px 抖动各取消过一次。放到 14px：
+  //    既容得下手抖，又能在「明显想滑动」时正常取消。
+  const HOLD_MS = 60,
+    HOLD_SLOP = 14;
+  let pressTimer = null,
+    pressOrigin = { x: 0, y: 0 },
+    pressTile = null,
+    longPressed = false,
+    suppressClick = false,
+    dragPath = null,
+    dragging = false,
+    // 拖拽上报去重用的「上一次光标格」。与 dragPath（渲染结果）分开，
+    // 见 pressMove 里的说明。
+    lastDragKey = null;
+  function cancelPressTimer() {
+    if (pressTimer) {
+      clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+  }
   let previousState = null;
   let movement = new Map();
   let explosions = [];
@@ -813,25 +844,95 @@ export function createRenderer(
       }
     }
   }
+  // 拉拽箭头配色：己方用本作已有的红（与「可攻击目标」同色系），敌方只读用灰。
+  const ARROW_TONES = {
+    own: {
+      core: "#e0523f",
+      edge: "rgba(90,22,14,.85)",
+      head: "#ffd5b4",
+      tail: "#ffe8d6",
+    },
+    enemy: {
+      core: "rgba(148,158,156,.9)",
+      edge: "rgba(38,48,47,.8)",
+      head: "#d6dedc",
+      tail: "#e6ecea",
+    },
+  };
+  function arrowTone() {
+    return ARROW_TONES[scene.arrowTone] || ARROW_TONES.own;
+  }
+  /**
+   * 画「移动箭头」——《高级战争》那套红色路线箭头。
+   * 优先用上层钉住/正在拖拽的 arrowPath；没有时退回旧的 preview 单点逻辑。
+   */
   function paintPath() {
-    const preview = scene.preview;
-    if (!preview || !scene.selectedId) return;
-    const unit = unitById.get(scene.selectedId);
-    if (!unit) return;
-    const destination = scene.reachable?.find(
-      (t) => t.x === preview.x && t.y === preview.y,
-    );
-    const raw = destination?.path || [];
-    const path = raw.length
-      ? [{ x: unit.x, y: unit.y }, ...raw]
-      : [{ x: unit.x, y: unit.y }, preview];
-    if (path.length < 2) return;
-    const points = path.map((t) => [t.x * TILE + 20, t.y * TILE + 20]);
-    line(ctx, points, "rgba(25,66,57,.75)", 5);
-    line(ctx, points, "#dcf5ce", 2);
+    const pinned = scene.arrowPath;
+    let points = null;
+    if (pinned && pinned.length >= 2) {
+      points = pinned.map((t) => [t.x * TILE + 20, t.y * TILE + 20]);
+    } else {
+      const preview = scene.preview;
+      if (!preview || !scene.selectedId) return;
+      const unit = unitById.get(scene.selectedId);
+      if (!unit) return;
+      const destination = scene.reachable?.find(
+        (t) => t.x === preview.x && t.y === preview.y,
+      );
+      const raw = destination?.path || [];
+      const path = raw.length
+        ? [{ x: unit.x, y: unit.y }, ...raw]
+        : [{ x: unit.x, y: unit.y }, preview];
+      if (path.length < 2) return;
+      points = path.map((t) => [t.x * TILE + 20, t.y * TILE + 20]);
+    }
+    const tone = arrowTone();
+    // 先画深色描边，再压上亮色芯线 —— 保证在青色范围格上也看得清。
+    line(ctx, points, tone.edge, 7);
+    line(ctx, points, tone.core, 4);
+    // 起点圆点：单位所在位置
+    const [startX, startY] = points[0];
+    box(ctx, startX - 4, startY - 4, 8, 8, tone.edge);
+    box(ctx, startX - 3, startY - 3, 6, 6, tone.tail);
+    // 末端三角箭头，指向最后一个拐点（单格时朝右）
     const [endX, endY] = points[points.length - 1];
-    box(ctx, endX - 3, endY - 3, 6, 6, "#edffe0");
-    box(ctx, endX - 1, endY - 1, 2, 2, "#72a690");
+    const [prevX, prevY] = points[points.length - 2] || [endX - TILE, endY];
+    arrowHead(ctx, prevX, prevY, endX, endY, tone);
+  }
+  /** 在 (toX,toY) 处画一个指向方向的三角箭头。 */
+  function arrowHead(ctx, fromX, fromY, toX, toY, tone) {
+    let dx = toX - fromX,
+      dy = toY - fromY;
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len;
+    dy /= len;
+    const size = 11,
+      spread = 7;
+    const tipX = toX + dx * size,
+      tipY = toY + dy * size;
+    const leftX = toX - dy * spread,
+      leftY = toY + dx * spread;
+    const rightX = toX + dy * spread,
+      rightY = toY - dx * spread;
+    // 描边三角（略大一圈）
+    polygon(
+      ctx,
+      [
+        [tipX + dx * 2, tipY + dy * 2],
+        [leftX - dx * 1 - dy * 2, leftY - dy * 1 + dx * 2],
+        [rightX - dx * 1 + dy * 2, rightY - dy * 1 - dx * 2],
+      ],
+      tone.edge,
+    );
+    polygon(
+      ctx,
+      [
+        [tipX, tipY],
+        [leftX, leftY],
+        [rightX, rightY],
+      ],
+      tone.head,
+    );
   }
   function draw(time = performance.now()) {
     if (destroyed || !scene.state || !logicalWidth) return;
@@ -849,6 +950,10 @@ export function createRenderer(
     paintDynamics(time);
     for (let i = 0; i < (scene.reachable?.length || 0); i++) {
       const t = scene.reachable[i];
+      rangeTile(ctx, t.x, t.y, false, i);
+    }
+    for (let i = 0; i < (scene.hoverPreview?.length || 0); i++) {
+      const t = scene.hoverPreview[i];
       rangeTile(ctx, t.x, t.y, false, i);
     }
     for (const target of scene.targets || []) {
@@ -986,9 +1091,14 @@ export function createRenderer(
   }
   function tick(time) {
     if (destroyed) return;
+    // 帧率上限：原为 `> 32`（约 30fps），是「极速拖动时画面跟不上手」的原因之一。
+    // 实测单帧 draw() 仅 0.115ms（地形走离屏缓存），完全没有压到 30fps 的必要。
+    // 放到 `> 8`（约 120fps）——不是要跑满 120，而是让每个 rAF 都能刷新，
+    // 由浏览器自己的 vsync 决定实际帧率（通常 60fps）。这消除的是「人为降帧」，
+    // 真正的渲染成本仍由单帧 0.115ms 决定，不会因此吃满 CPU。
     if (
       !reducedMotion &&
-      time - lastFrameTime > 32 &&
+      time - lastFrameTime > 8 &&
       !document.hidden &&
       (!canvas.getClientRects || canvas.getClientRects().length)
     ) {
@@ -1049,6 +1159,7 @@ export function createRenderer(
     return { x, y };
   }
   function click(event) {
+    if (suppressClick) return;
     const tile = eventTile(event);
     if (tile) onTile(tile.x, tile.y);
   }
@@ -1069,9 +1180,86 @@ export function createRenderer(
     scene.hoverTile = null;
     draw();
   }
+  // 长按/拖拽：按住不动 HOLD_MS 进入箭头模式，此后拖动即拉出箭头。
+  function pressStart(event) {
+    if (event.button != null && event.button !== 0) return;
+    const tile = eventTile(event);
+    if (!tile) return;
+    pressOrigin = { x: event.clientX, y: event.clientY };
+    pressTile = tile;
+    dragPath = null;
+    dragging = false;
+    lastDragKey = null;
+    cancelPressTimer();
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      longPressed = true;
+      dragging = true;
+      canvas.classList.add("dragging");
+      onHold(tile.x, tile.y);
+    }, HOLD_MS);
+  }
+  function pressMove(event) {
+    if (pressTimer) {
+      // 还没进入箭头模式：移动超过容差即视为滑动，取消长按
+      if (
+        Math.abs(event.clientX - pressOrigin.x) > HOLD_SLOP ||
+        Math.abs(event.clientY - pressOrigin.y) > HOLD_SLOP
+      )
+        cancelPressTimer();
+      return;
+    }
+    if (!dragging) return;
+    // 已进入箭头模式：拖动不再取消，转为把光标位置喂给上层算箭头。
+    //
+    // ★ 去重口径（2026-09-30 修正，这里原先是「极速拖动没反应」的元凶）：
+    // 旧代码用 `dragPath` 的**终点**去重。但上层 setArrowPath 存进 dragPath 的是
+    // 「回退后的合法落点」——快速划过一片不可达区域时，连续多次 pointermove 算出的
+    // 合法落点完全相同 → 第 2 次起全被 return 掉。实测 100 次 move 只过了 4 次。
+    //
+    // 正确口径：按**光标所在格**去重。光标格真的变了就必须上报，
+    // 否则上层没法更新「玩家现在指哪儿」。用独立的 lastDragKey 记录，
+    // 不再和 dragPath（那是渲染结果）混用。
+    const tile = eventTile(event);
+    if (!tile) return;
+    const key = tileKey(tile.x, tile.y);
+    if (key === lastDragKey) return;
+    lastDragKey = key;
+    onDrag(tile.x, tile.y);
+  }
+  function pressEnd() {
+    const wasDragging = dragging;
+    // ★ 抑制 click 的真实判据：这次按下**是否真的拖拽过**（光标是否移动过）。
+    //
+    // 原先用 `longPressed`（=是否进入过长按模式）当判据，在 HOLD_MS 降到 60ms 后出问题：
+    // 一次普通的「慢慢点击」（按住 80~150ms）也会被判成长按 → suppressClick=true
+    // → 紧随其后的 click 被吃掉 → 表现成「点一下没反应，兵不走 / 取消不了选择」。
+    //
+    // 正确口径：只有「长按 + 光标确实移动过」才算拖拽，才需要抑制 click。
+    // 单纯按住不动再松手（没拖）= 仍然是一次点击，必须放行。
+    const reallyDragged = wasDragging && lastDragKey !== null;
+    cancelPressTimer();
+    dragging = false;
+    longPressed = false;
+    dragPath = null;
+    lastDragKey = null;
+    canvas.classList.remove("dragging");
+    // 长按且真的拖动过时，抑制紧随其后的 click（避免被当成"点了一下"）
+    if (reallyDragged) {
+      suppressClick = true;
+      setTimeout(() => {
+        suppressClick = false;
+      }, 0);
+    }
+    if (wasDragging) onDragEnd();
+  }
   canvas.addEventListener("click", click);
   canvas.addEventListener("pointermove", hover);
+  canvas.addEventListener("pointermove", pressMove);
   canvas.addEventListener("pointerleave", leave);
+  canvas.addEventListener("pointerdown", pressStart);
+  canvas.addEventListener("pointerup", pressEnd);
+  canvas.addEventListener("pointercancel", pressEnd);
   const observer =
     typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
@@ -1088,6 +1276,33 @@ export function createRenderer(
   frame = requestAnimationFrame(tick);
   return {
     setScene,
+    setHoverPreview(cells) {
+      if (destroyed) return;
+      const next = cells && cells.length ? cells : null;
+      const prev = scene.hoverPreview;
+      if (!next && !prev) return;
+      if (
+        next &&
+        prev &&
+        next.length === prev.length &&
+        next[0]?.x === prev[0]?.x &&
+        next[0]?.y === prev[0]?.y &&
+        next[next.length - 1]?.x === prev[prev.length - 1]?.x &&
+        next[next.length - 1]?.y === prev[prev.length - 1]?.y
+      )
+        return;
+      scene.hoverPreview = next;
+      draw(performance.now());
+    },
+    setArrowPath(path, tone = "own") {
+      if (destroyed) return;
+      const next = path && path.length >= 2 ? path : null;
+      scene.arrowPath = next;
+      scene.arrowTone = tone;
+      // 记录给拖拽去重使用
+      dragPath = next;
+      draw(performance.now());
+    },
     render: () => draw(performance.now()),
     resize: () => {
       size();
@@ -1096,10 +1311,19 @@ export function createRenderer(
     destroy() {
       destroyed = true;
       cancelAnimationFrame(frame);
+      cancelPressTimer();
+      dragging = false;
+      dragPath = null;
+      lastDragKey = null;
+      canvas.classList.remove("dragging");
       observer?.disconnect();
       canvas.removeEventListener("click", click);
       canvas.removeEventListener("pointermove", hover);
+      canvas.removeEventListener("pointermove", pressMove);
       canvas.removeEventListener("pointerleave", leave);
+      canvas.removeEventListener("pointerdown", pressStart);
+      canvas.removeEventListener("pointerup", pressEnd);
+      canvas.removeEventListener("pointercancel", pressEnd);
       window.removeEventListener("resize", onWindowResize);
       movement.clear();
       explosions = [];

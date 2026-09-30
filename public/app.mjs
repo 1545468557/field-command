@@ -41,7 +41,10 @@ let selectedId = null,
   destination = null,
   targetId = null,
   selectedTile = null,
-  hoveredTile = null;
+  hoveredTile = null,
+  holdPreviewId = null,
+  dragUnitId = null,
+  dragArrowPath = null;
 let serviceURLs = [],
   previousTurn = null,
   victoryShown = null,
@@ -308,6 +311,9 @@ const battleRenderer = createRenderer($("#battle-canvas"), {
   onTile: handleTile,
   onCombat: showCombat,
   onCapture: onMapCapture,
+  onHold: handleHold,
+  onDrag: handleDrag,
+  onDragEnd: handleDragEnd,
   onHover(x, y) {
     hoveredTile = { x, y };
     if (!room?.state) return;
@@ -357,6 +363,172 @@ function resetSelection() {
   destination = null;
   targetId = null;
   selectedTile = null;
+  holdPreviewId = null;
+  dragUnitId = null;
+  dragArrowPath = null;
+  battleRenderer?.setHoverPreview(null);
+  battleRenderer?.setArrowPath(null);
+}
+/**
+ * 长按（按住不动约 0.1 秒）进入「拉拽箭头」模式。
+ * 自己单位：铺范围 + 可拉箭头 + 松手后出命令；敌方单位：只读灰箭头，不出命令。
+ * 这是预览，不改变 selectedId，也不影响点击选中与下令。
+ */
+function handleHold(x, y) {
+  if (!room?.state || busy) return;
+  const unit = room.state.units.find((u) => u.x === x && u.y === y);
+  if (!unit) {
+    clearHoldPreview();
+    return;
+  }
+  // 只有轮到己方能下令的己方部队才有命令权；其余（敌方/已行动/非我回合）走只读
+  const commandable = canCommandUnit(unit);
+  let cells = [];
+  try {
+    cells = reachable(room.state, unit.id);
+  } catch {
+    cells = [];
+  }
+  holdPreviewId = unit.id;
+  dragUnitId = unit.id;
+  dragArrowPath = null;
+  battleRenderer.setHoverPreview(cells);
+  battleRenderer.setArrowPath(null, commandable ? "own" : "enemy");
+  beep();
+}
+/** 该单位此刻是否有下达命令的权限（与 canCommand 同判据，但不依赖 selectedId）。 */
+function canCommandUnit(unit) {
+  return Boolean(
+    unit && isMyTurn() && unit.owner === session.seat && !unit.acted && !busy,
+  );
+}
+function clearHoldPreview() {
+  if (holdPreviewId === null && dragUnitId === null) return;
+  holdPreviewId = null;
+  dragUnitId = null;
+  dragArrowPath = null;
+  battleRenderer.setHoverPreview(null);
+  battleRenderer.setArrowPath(null);
+}
+/**
+ * 拖拽中：把光标所在格换算成「合法落点」，并把真实路线交给渲染层画箭头。
+ * 拖到范围外时钳制到「离光标最近的可达格」——箭头永远指着一个走得到的格子。
+ */
+function handleDrag(x, y) {
+  if (!room?.state || busy || dragUnitId === null) return;
+  const unit = room.state.units.find((u) => u.id === dragUnitId);
+  if (!unit) return;
+  let all = [];
+  try {
+    all = reachable(room.state, unit.id);
+  } catch {
+    return;
+  }
+  if (!all.length) return;
+  // 沿上次的路径回退找合法落点（xpgram 的 recalculatePathToPoint 策略）
+  const resolved = resolveDestination(all, x, y, dragArrowPath);
+  if (!resolved?.path?.length) return;
+  const path = [{ x: unit.x, y: unit.y }, ...resolved.path];
+  dragArrowPath = path;
+  battleRenderer.setArrowPath(
+    path,
+    canCommandUnit(unit) ? "own" : "enemy",
+  );
+}
+/** 松手：钉住箭头并把落点记为预选目的地（此时部队还没行动）。 */
+function handleDragEnd() {
+  if (!room?.state || busy || dragUnitId === null) return;
+  const unit = room.state.units.find((u) => u.id === dragUnitId);
+  const path = dragArrowPath;
+  dragUnitId = null;
+  if (!unit || !path || path.length < 2) {
+    dragArrowPath = null;
+    battleRenderer.setArrowPath(null);
+    renderBattle();
+    return;
+  }
+  const last = path[path.length - 1];
+  const can = canCommandUnit(unit);
+  if (!can) {
+    // 敌方只读：箭头保留供观察，但不产生任何命令
+    holdPreviewId = unit.id;
+    dragArrowPath = path;
+    battleRenderer.setArrowPath(path, "enemy");
+    renderBattle();
+    return;
+  }
+  // 与点击选中一致：接管显示，进入正常的预选流程
+  selectedId = unit.id;
+  destination = { x: last.x, y: last.y };
+  targetId = null;
+  selectedTile = { x: last.x, y: last.y };
+  holdPreviewId = null;
+  dragArrowPath = path;
+  battleRenderer.setHoverPreview(null);
+  beep();
+  renderBattle();
+}
+/**
+ * 拖拽时把光标位置换算成「合法落点」。
+ *
+ * 算法搬自 xpgram/advance-wars (MIT) 的 `recalculatePathToPoint`：
+ * 当目标点不可达时，**不自作主张跳到最近的格子**，而是沿着当前路径
+ * 从末尾往前逐级回退（终点 → 前一步 → … → 起点），找到第一个仍然合法的位置。
+ *
+ * 效果差异（这是搬它的唯一理由）：
+ *  - 旧做法：拖到河对岸 → 箭头「啪」地跳到旁边一个格，看不出为什么；
+ *  - 新做法：拖到河对岸 → 箭头**顺着你来时的路线缩回来**，停在河这边最后一格，
+ *            玩家一眼看懂「哦，过不去，只能到这儿」。
+ *
+ * @param cells 可达格（含各自 path）
+ * @param x,y   光标所在格
+ * @param prevPath 上一次的箭头路径（用于「沿原路回退」），可为空
+ * @returns {{ cell: object, path: Array }|null}
+ */
+function resolveDestination(cells, x, y, prevPath) {
+  if (!cells.length) return null;
+  const at = (px, py) => cells.find((c) => c.x === px && c.y === py);
+
+  // ① 光标正好落在某个可达格上 → 直接用它的真实路线
+  const direct = at(x, y);
+  if (direct) return { cell: direct, path: pathOfCell(direct) };
+
+  // ② 否则：在「上一次的路径」上从末尾向前找，取第一个仍然可达的位置
+  //    —— 这是 xpgram 的 pathIndices = [last, last-1, 1, 0] 回退策略。
+  if (prevPath && prevPath.length) {
+    for (let i = prevPath.length - 1; i >= 0; i--) {
+      const p = prevPath[i];
+      const cell = at(p.x, p.y);
+      if (cell) return { cell, path: pathOfCell(cell) };
+    }
+  }
+
+  // ③ 没有历史路径（第一次拖动就拖到外面）→ 退回旧的「最近格」策略
+  const cell = nearestCell(cells, x, y);
+  return cell ? { cell, path: pathOfCell(cell) } : null;
+}
+/** 把可达格自带的 path 展开成含起点的完整点列。 */
+function pathOfCell(cell) {
+  return cell?.path?.length ? [...cell.path] : [];
+}
+/** 从可达格里挑离 (x,y) 曼哈顿距离最近的格；同距离时取消耗更小的。 */
+function nearestCell(cells, x, y) {
+  let best = null,
+    bestScore = Infinity;
+  for (const cell of cells) {
+    const score = Math.abs(cell.x - x) + Math.abs(cell.y - y);
+    if (score < bestScore || (score === bestScore && cell.cost < best.cost)) {
+      best = cell;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+/** 还原「单位 → 落点」的完整路线点列（含起点）。 */
+function pathOf(unit, cell, all) {
+  const dest = all.find((t) => t.x === cell.x && t.y === cell.y) || cell;
+  const raw = dest.path || [];
+  return raw.length ? [{ x: unit.x, y: unit.y }, ...raw] : [{ x: unit.x, y: unit.y }, { x: cell.x, y: cell.y }];
 }
 function updateScene() {
   if (!room?.state) return;
@@ -364,25 +536,47 @@ function updateScene() {
   let moves = [];
   if (canCommand()) {
     try {
-      const all = reachable(room.state, unit.id);
-      moves = destination
-        ? all.filter(
-            (cell) => cell.x === destination.x && cell.y === destination.y,
-          )
-        : all;
+      moves = reachable(room.state, unit.id);
     } catch {}
+  }
+  // 目的地已预选时，把钉住的真实路线交给渲染层（否则箭头会退化成直线）
+  let arrowPath = dragArrowPath;
+  if (!arrowPath && destination && unit) {
+    const dest = moves.find(
+      (c) => c.x === destination.x && c.y === destination.y,
+    );
+    if (dest?.path?.length)
+      arrowPath = [{ x: unit.x, y: unit.y }, ...dest.path];
   }
   battleRenderer.setScene({
     state: room.state,
     selectedId,
-    reachable: moves,
+    reachable: ridesSurface(moves, destination, arrowPath),
     targets: validTargets(unit),
     hoverTile: selectedTile,
     preview: destination,
   });
+  battleRenderer.setArrowPath(
+    arrowPath,
+    unit?.owner === session.seat ? "own" : "enemy",
+  );
+}
+/**
+ * 目的地已确定时收缩青色的「可选格」提示，但仍保留路线经过的格，
+ * 免得箭头下面空一片、看不出走法。
+ */
+function ridesSurface(moves, dest, arrowPath) {
+  if (!dest || !arrowPath) return moves;
+  const keep = new Set(arrowPath.map((t) => `${t.x},${t.y}`));
+  return moves.filter((c) => keep.has(`${c.x},${c.y}`));
 }
 function handleTile(x, y) {
   if (!room?.state || busy) return;
+  // 点击会接管显示：清掉长按留下的只读预览与拖拽箭头
+  holdPreviewId = null;
+  dragUnitId = null;
+  dragArrowPath = null;
+  battleRenderer.setHoverPreview(null);
   const state = room.state,
     unit = state.units.find((u) => u.x === x && u.y === y),
     selected = selectedUnit();
@@ -397,8 +591,25 @@ function handleTile(x, y) {
     if (!unit || unit.id === selected.id) {
       const moves = reachable(state, selected.id);
       if (moves.some((p) => p.x === x && p.y === y)) {
+        // 已预选同一格 → 就是「再点一下」，直接执行移动并待机
+        if (
+          destination &&
+          destination.x === x &&
+          destination.y === y &&
+          !targetId
+        ) {
+          performAction({
+            type: "move",
+            unitId: selected.id,
+            x,
+            y,
+            command: "wait",
+          });
+          return;
+        }
         destination = { x, y };
         targetId = null;
+        dragArrowPath = null;
         beep();
         renderBattle();
         return;
@@ -408,6 +619,7 @@ function handleTile(x, y) {
   selectedId = unit?.id || null;
   destination = null;
   targetId = null;
+  dragArrowPath = null;
   beep();
   renderBattle();
 }
@@ -686,7 +898,7 @@ function renderSelection() {
       }
       commands += `<button data-command="cancel">${destination || targetId ? "取消预选" : "取消选择"}</button>`;
     }
-    panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">${esc(names[unit.owner])} / UNIT ${esc(unit.id)}</span><h2>${esc(definition.name)}</h2></div><span class="hp-badge">${unit.hp}<small>兵力 / 10</small></span></div><div class="selection-content"><div class="unit-stats"><div><span>移动 / 射程</span><strong>${definition.move} / ${definition.minRange}–${definition.maxRange}</strong></div><div><span>弹药 / 燃料</span><strong>${unit.ammo === null || unit.ammo === undefined ? "∞" : unit.ammo} / ${Math.floor(unit.fuel || 0)}</strong></div><div><span>地形防御</span><strong>${TERRAINS[tile.type]?.defense || 0} ★</strong></div></div>${combat}<p>${can ? (targetId ? "确认后结算伤害与反击。" : destination ? "目的地已预选。选择命令后执行；点击红色目标可攻击。" : "点击青色格预选移动；点击红色敌军预览攻击。") : unit.acted ? "该部队已行动，下个己方回合恢复。" : unit.owner !== session.seat ? "观察敌我部署，利用射程与地形安排推进。" : "等待己方回合后可下达指令。"}</p>${["city", "factory", "hq"].includes(tile.type) ? `<p>据点：${tile.owner === null ? "中立" : esc(names[tile.owner])} · 剩余占领值 ${tile.capture ?? 20}</p>` : ""}<div class="command-list">${commands}</div></div>`;
+    panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">${esc(names[unit.owner])} / UNIT ${esc(unit.id)}</span><h2>${esc(definition.name)}</h2></div><span class="hp-badge">${unit.hp}<small>兵力 / 10</small></span></div><div class="selection-content"><div class="unit-stats"><div><span>移动 / 射程</span><strong>${definition.move} / ${definition.minRange}–${definition.maxRange}</strong></div><div><span>弹药 / 燃料</span><strong>${unit.ammo === null || unit.ammo === undefined ? "∞" : unit.ammo} / ${Math.floor(unit.fuel || 0)}</strong></div><div><span>地形防御</span><strong>${TERRAINS[tile.type]?.defense || 0} ★</strong></div></div>${combat}<p>${can ? (targetId ? "确认后结算伤害与反击。" : destination ? "目的地已预选。再点一次目的地即可移动，或点红色目标攻击。" : "按住部队拖出红色箭头选路线，或点击青色格预选移动。") : unit.acted ? "该部队已行动，下个己方回合恢复。" : unit.owner !== session.seat ? "观察敌我部署，利用射程与地形安排推进。" : "等待己方回合后可下达指令。"}</p>${["city", "factory", "hq"].includes(tile.type) ? `<p>据点：${tile.owner === null ? "中立" : esc(names[tile.owner])} · 剩余占领值 ${tile.capture ?? 20}</p>` : ""}<div class="command-list">${commands}</div></div>`;
     panel.querySelectorAll("[data-command]").forEach(
       (button) =>
         (button.onclick = () => {
@@ -1030,7 +1242,7 @@ $("#resume-game").onclick = () =>
 function help() {
   openModal(
     "战地手册",
-    `<section class="help-section"><h3>01 / 下达第一条指令</h3><p>点击己方单位 → 点击青色移动格 → 选择「待机」「占领」或点击红色敌军后「确认攻击」。预选移动可以取消；执行后的指令不可撤销。</p></section><section class="help-section"><h3>02 / 用地形与射程赢得交换</h3><p>单位每回合行动一次。森林、山地和据点提供防御。步兵可登山，车辆必须绕行。火炮与火箭炮具有最小射程，移动后不能开火；近战单位会在条件允许时反击。</p></section><section class="help-section"><h3>03 / 占领、生产与补给</h3><p>步兵与机步兵能占领城市、工厂与总部，单次占领推进量取决于剩余血量。点击空闲的己方工厂生产部队。占领据点带来收入；己方据点能维修和补给。补给车可补充邻近部队的弹药与燃料。</p></section><section class="help-section"><h3>04 / 指挥官与胜利条件</h3><p>交战积累指挥能量，50 点可发动普通能力，100 点可发动超级能力。占领敌方总部可使其出局；失去全部单位与工厂也会出局。最后存活的一方或队伍获胜。2v2 中队友资金独立。</p></section><section class="help-section"><h3>05 / 局域网与存档</h3><p>房主创建房间，把邀请地址发给同一局域网内的朋友。支持 2–4 人，空闲电脑席位可在开局前被玩家加入。每次行动自动保存，「保存对局」另存手动快照。断线后使用原浏览器重连，原席位会保留。房主浏览器可以关闭，运行服务的电脑需保持在线。</p></section><section class="help-section"><h3>06 / 操作与首版范围</h3><p><span class="key">Esc</span> 取消预选 / 关闭弹窗　<span class="key">Space</span> 结束回合</p><p>本版提供 8 种陆军、3 张地图与 2 名原创指挥官，全图可见。补给车暂不载兵。海空军、战争迷雾与战役剧情留待后续扩展。</p></section>`,
+    `<section class="help-section"><h3>01 / 下达第一条指令</h3><p><strong>按住</strong>己方部队约 0.1 秒，青色行动范围展开；<strong>别松手直接拖</strong>，会拉出一条红色移动箭头，随你的光标沿真实路线拐弯。松手钉住箭头，再点地图上的目的地（或点右侧「移动并待机」）部队才会前进。也可以沿用老办法：点单位 → 点青色格 → 选命令。攻击则为：预选落点后点红色敌军，再点「确认攻击」。预选移动可以取消；执行后的指令不可撤销。</p></section><section class="help-section"><h3>02 / 用地形与射程赢得交换</h3><p>单位每回合行动一次。森林、山地和据点提供防御。步兵可登山，车辆必须绕行。火炮与火箭炮具有最小射程，移动后不能开火；近战单位会在条件允许时反击。</p></section><section class="help-section"><h3>03 / 占领、生产与补给</h3><p>步兵与机步兵能占领城市、工厂与总部，单次占领推进量取决于剩余血量。点击空闲的己方工厂生产部队。占领据点带来收入；己方据点能维修和补给。补给车可补充邻近部队的弹药与燃料。</p></section><section class="help-section"><h3>04 / 指挥官与胜利条件</h3><p>交战积累指挥能量，50 点可发动普通能力，100 点可发动超级能力。占领敌方总部可使其出局；失去全部单位与工厂也会出局。最后存活的一方或队伍获胜。2v2 中队友资金独立。</p></section><section class="help-section"><h3>05 / 局域网与存档</h3><p>房主创建房间，把邀请地址发给同一局域网内的朋友。支持 2–4 人，空闲电脑席位可在开局前被玩家加入。每次行动自动保存，「保存对局」另存手动快照。断线后使用原浏览器重连，原席位会保留。房主浏览器可以关闭，运行服务的电脑需保持在线。</p></section><section class="help-section"><h3>06 / 操作与首版范围</h3><p><span class="key">Esc</span> 取消预选 / 关闭弹窗　<span class="key">Space</span> 结束回合</p><p>本版提供 8 种陆军、3 张地图与 2 名原创指挥官，全图可见。补给车暂不载兵。海空军、战争迷雾与战役剧情留待后续扩展。</p></section>`,
     "FIELD MANUAL / 指挥入门",
   );
 }
@@ -1047,9 +1259,16 @@ document.addEventListener("keydown", (event) => {
   if (modal.open) return;
   if (screen !== "battle") return;
   if (event.key === "Escape") {
+    if (holdPreviewId !== null || dragArrowPath) {
+      // 长按预览/拖拽箭头最临时，Esc 优先清它
+      clearHoldPreview();
+      renderBattle();
+      return;
+    }
     if (destination || targetId) {
       destination = null;
       targetId = null;
+      dragArrowPath = null;
     } else resetSelection();
     renderBattle();
   }

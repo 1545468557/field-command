@@ -870,6 +870,10 @@ input::placeholder {
   max-height: calc(100vh - 390px);
   object-fit: contain;
 }
+/* 长按进入拖拽箭头模式时，给一个明确的手感反馈 */
+.battle-canvas-wrap canvas.dragging {
+  cursor: grabbing;
+}
 .combat-stage {
   position: absolute;
   inset: 12px;

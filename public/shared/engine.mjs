@@ -477,6 +477,22 @@ export function createGame({
   validateState(state);
   return state;
 }
+/**
+ * 搜索保险 #1：单次寻路的**出队**次数上限。
+ * 思路搬自 xpgram/advance-wars (MIT) `pathIterableFrom` 的循环卫兵，
+ * 但**数值必须自己定**——它那里的 200 是按「每个候选格跑一次 BFS」计的，
+ * 我们这个 Dijkstra 每轮弹一格，语义完全不同。
+ * 实测：正常地图单次寻路约 0.07ms、几十次出队；本机 8ms 预算下可容 4000 次出队。
+ * 取 4000：既远高于任何正常棋盘的需求（不会误伤大地图），
+ * 又能在数据损坏导致队列爆炸时兜底（不会死循环）。
+ */
+const SEARCH_MAX_STEPS = 4000;
+/**
+ * 搜索保险 #2：单次寻路的耗时上限（毫秒）。
+ * 搬自 xpgram 的 `QueueSearch`——它给每个搜索任务挂了计时器，超时就中止并告警。
+ * 这里用 8ms 是因为整帧预算约 16ms，寻路不能吃掉一半以上。
+ */
+const SEARCH_MAX_MS = 8;
 /** Shortest legal routes. Allied tiles can be crossed, but never used as destinations. */
 export function reachable(state, unitId) {
   const unit = state.units.find((u) => u.id === unitId);
@@ -487,15 +503,31 @@ export function reachable(state, unitId) {
     unit.fuel,
   );
   const occupied = new Map(state.units.map((u) => [positionKey(u.x, u.y), u]));
+  /*
+   * 链式路径存储（搬自 xpgram 的 `square.arrowFrom` 方向字段做法）。
+   *
+   * 旧写法每扩展一格就 `[...current.path, {x, y}]`——一条长路径会被反复整体复制，
+   * 内存和复制量都是 O(n²)。新写法每格只存 `prev` 指针指向来源格，
+   * 寻路期间是 O(n)；只有在**对外返回**时才沿指针回溯展开成数组。
+   *
+   * 对外契约不变：调用方拿到的仍然是 `path: [{x,y}, ...]` 数组，
+   * 含起点、含终点、顺序不变（test/engine.test.mjs 用 deepEqual 卡死了这一点）。
+   */
   const first = {
     x: unit.x,
     y: unit.y,
     cost: 0,
-    path: [{ x: unit.x, y: unit.y }],
+    prev: null,
   };
   const queue = [first],
     best = new Map([[positionKey(unit.x, unit.y), first]]);
+  const startedAt = Date.now();
+  let steps = 0;
   while (queue.length) {
+    if (++steps > SEARCH_MAX_STEPS || Date.now() - startedAt > SEARCH_MAX_MS) {
+      // 数据异常或地图过大：截断搜索，返回已经确定的最优结果。
+      break;
+    }
     queue.sort((a, b) => a.cost - b.cost);
     const current = queue.shift();
     if (best.get(positionKey(current.x, current.y)) !== current) continue;
@@ -517,15 +549,35 @@ export function reachable(state, unitId) {
         key = positionKey(x, y);
       if (cost > limit || (best.has(key) && best.get(key).cost <= cost))
         continue;
-      const next = { x, y, cost, path: [...current.path, { x, y }] };
+      const next = { x, y, cost, prev: current };
       best.set(key, next);
       queue.push(next);
     }
   }
-  return [...best.values()].filter((cell) => {
-    const u = occupied.get(positionKey(cell.x, cell.y));
-    return !u || u.id === unit.id;
-  });
+  return [...best.values()]
+    .filter((cell) => {
+      const u = occupied.get(positionKey(cell.x, cell.y));
+      return !u || u.id === unit.id;
+    })
+    .map((cell) => ({
+      x: cell.x,
+      y: cell.y,
+      cost: cell.cost,
+      // 把 `prev` 指针链回溯展开成对外契约要求的外显 path 数组。
+      path: unwindPath(cell),
+    }));
+}
+/**
+ * 沿 `prev` 指针回溯出完整点列（含起点、含终点）。
+ * 搬自 xpgram `pathIterableFrom` 的「由终点反向还原路线」思路，只是它存方向、我们存指针。
+ */
+function unwindPath(cell) {
+  const points = [];
+  for (let node = cell; node; node = node.prev) {
+    points.push({ x: node.x, y: node.y });
+  }
+  points.reverse();
+  return points;
 }
 export function attackable(state, unitId, from) {
   const unit = state.units.find((u) => u.id === unitId);
