@@ -397,47 +397,48 @@ function paintUnit(ctx, unit, x, y, motion) {
  * 我们不用百分比，用本作的 −HP 制（更符合已有数值体系）。
  * 目标：**信息出现在战场上，而不是屏幕边上的卡片里**。
  */
-function damageBubble(ctx, cellX, cellY, label, value, tone) {
+function damageBubble(ctx, cellX, cellY, label, value, tone, canvasW = 0) {
   const cx = cellX * TILE + TILE / 2;
-  const bubbleW = 58;
-  const bubbleH = 34;
-  // 默认浮在目标格上方一格；若会跑出画布顶部则改到下方
+  const bubbleW = 46;
+  const bubbleH = 28;
+  // 默认浮在目标格**上方偏右**：偏右是为了避开脚下的环形光标
+  // （光标半径 TILE*0.66，正上方会被环压住）。
+  // 若会顶出画布上沿则翻到下方；若右侧越界则靠左贴边。
   const above = cellY > 1;
-  const by = above ? cellY * TILE - bubbleH - 6 : cellY * TILE + TILE + 6;
-  const bx = Math.round(cx - bubbleW / 2);
+  const by = above ? cellY * TILE - bubbleH - 4 : cellY * TILE + TILE + 4;
+  let bx = Math.round(cx - bubbleW * 0.35);
+  if (canvasW > 0) bx = Math.max(2, Math.min(bx, canvasW - bubbleW - 2));
   // 阴影
   box(ctx, bx + 2, by + 2, bubbleW, bubbleH, "rgba(0,0,0,.35)");
   // 牌头（深色条）
-  box(ctx, bx, by, bubbleW, 13, "rgba(38,48,54,.96)");
+  box(ctx, bx, by, bubbleW, 11, "rgba(38,48,54,.96)");
   // 牌身（亮色底）
-  box(ctx, bx, by + 13, bubbleW, bubbleH - 13, tone.body);
+  box(ctx, bx, by + 11, bubbleW, bubbleH - 11, tone.body);
   // 外描边
   box(ctx, bx, by, bubbleW, 1, "rgba(0,0,0,.6)");
   box(ctx, bx, by + bubbleH - 1, bubbleW, 1, "rgba(0,0,0,.6)");
   box(ctx, bx, by, 1, bubbleH, "rgba(0,0,0,.6)");
   box(ctx, bx + bubbleW - 1, by, 1, bubbleH, "rgba(0,0,0,.6)");
-  // 尖角（指向目标格）
-  const tipY = above ? by + bubbleH : by - 5;
+  // 尖角：从牌子下沿指向目标格
   polygon(
     ctx,
     [
-      [cx - 6, above ? by + bubbleH - 1 : by + 1],
-      [cx + 6, above ? by + bubbleH - 1 : by + 1],
-      [cx, above ? by + bubbleH + 5 : by - 5],
+      [cx - 5, above ? by + bubbleH - 1 : by + 1],
+      [cx + 5, above ? by + bubbleH - 1 : by + 1],
+      [cx, above ? by + bubbleH + 4 : by - 4],
     ],
     tone.body,
   );
   // 文字（用 canvas 直接写，字号与像素风对齐）
   ctx.save();
-  ctx.font = "700 8px ui-monospace, monospace";
+  ctx.font = "700 7px ui-monospace, monospace";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(180,196,204,.95)";
-  ctx.fillText(label, bx + 5, by + 7);
-  ctx.font = "700 15px ui-monospace, monospace";
+  ctx.fillText(label, bx + 4, by + 6);
+  ctx.font = "700 12px ui-monospace, monospace";
   ctx.fillStyle = tone.text;
-  ctx.fillText(value, bx + 5, by + 23);
+  ctx.fillText(value, bx + 4, by + 19);
   ctx.restore();
-  void tipY;
 }
 
 function corners(ctx, x, y, color, inset = 1, length = 7, thickness = 2) {
@@ -489,7 +490,10 @@ function rangeTile(ctx, x, y, isTarget, index) {
     oy,
     TILE,
     TILE,
-    isTarget ? "rgba(240,104,78,.34)" : "rgba(122,224,168,.30)",
+    // 参考资产实测：AW 的范围是 rgb(144,216,170) 盖在草地上、**无边框**。
+    // 之前 .30 透明度实测只有 距离30/亮度+18（偏淡），提到 .42 让其真正"亮起来"，
+    // 但仍保留无边框 —— 边框才是"控件感"的来源，不是浓度。
+    isTarget ? "rgba(240,104,78,.42)" : "rgba(122,224,168,.42)",
   );
   // 只保留「可攻击目标」的中心准星，这是功能性提示而非装饰。
   if (isTarget) {
@@ -711,27 +715,40 @@ export function createRenderer(
   function ringCursor(ctx2, tileX, tileY, outerColor, innerColor) {
     const cx = tileX + TILE / 2;
     const cy = tileY + TILE / 2;
-    const outerR = TILE * 0.66;
-    const innerR = TILE * 0.56;
-    // 用 16 段拼环；跳过最左/最右各 1 段，形成开口。
-    const SEGMENTS = 16;
-    const OPEN = [3, 4, 11, 12]; // 左右开口（0=正右，逆时针）
+    const outerR = TILE * 0.60;
+    const innerR = TILE * 0.50;
+    // 用 24 段拼环；跳过左右各 2 段，形成明显的"马蹄形"开口。
+    // 段数少会让环变成粗糙的多边形（读起来像齿轮），段数多才像光环。
+    const SEGMENTS = 24;
+    const OPEN = new Set([5, 6, 7, 17, 18, 19]); // 左右开口
     const drawRing = (radius, color, thickness) => {
-      for (let i = 0; i < SEGMENTS; i++) {
-        if (OPEN.includes(i)) continue;
-        const a0 = (i / SEGMENTS) * Math.PI * 2;
-        const a1 = ((i + 1) / SEGMENTS) * Math.PI * 2;
-        const x0 = Math.round(cx + Math.cos(a0) * radius - thickness / 2);
-        const y0 = Math.round(cy + Math.sin(a0) * radius - thickness / 2);
-        const x1 = Math.round(cx + Math.cos(a1) * radius - thickness / 2);
-        const y1 = Math.round(cy + Math.sin(a1) * radius - thickness / 2);
-        const x = Math.min(x0, x1) - 1;
-        const y = Math.min(y0, y1) - 1;
-        box(ctx2, x, y, Math.abs(x1 - x0) + thickness + 2, Math.abs(y1 - y0) + thickness + 2, color);
+      // 用连续线段画弧，而不是逐段填方块 —— 后者会在接缝处叠出毛刺。
+      ctx2.strokeStyle = color;
+      ctx2.lineWidth = thickness;
+      ctx2.lineCap = "butt";
+      ctx2.beginPath();
+      let pen = false;
+      for (let i = 0; i <= SEGMENTS; i++) {
+        if (OPEN.has(i)) {
+          pen = false;
+          continue;
+        }
+        const a = (i / SEGMENTS) * Math.PI * 2 - Math.PI / 2;
+        const px = cx + Math.cos(a) * radius;
+        const py = cy + Math.sin(a) * radius;
+        if (!pen) {
+          ctx2.moveTo(px, py);
+          pen = true;
+        } else {
+          ctx2.lineTo(px, py);
+        }
       }
+      ctx2.stroke();
     };
-    drawRing(outerR, outerColor, 3);
-    drawRing(innerR, innerColor, 2);
+    // 外环压深、内环提亮 → 制造"光标是立体的"错觉（参考里就是双层描边）
+    drawRing(outerR, outerColor, Math.max(2, Math.round(TILE * 0.055)));
+    drawRing(innerR, innerColor, Math.max(1, Math.round(TILE * 0.035)));
+    ctx2.lineCap = "butt";
   }
 
   function cancelPressTimer() {
@@ -1114,10 +1131,15 @@ export function createRenderer(
     // 这样它"浮"在战场上但不遮住单位本身。
     if (scene.combatHint) {
       const hint = scene.combatHint;
-      damageBubble(ctx, hint.x, hint.y, "DAMAGE", `−${hint.damage}`, {
-        body: "#5df08c",
-        text: "#0d2416",
-      });
+      damageBubble(
+        ctx,
+        hint.x,
+        hint.y,
+        "DAMAGE",
+        `−${hint.damage}`,
+        { body: "#5df08c", text: "#0d2416" },
+        logicalWidth,
+      );
     }
     actionEvents = actionEvents.filter((event) => time < event.start + event.duration);
     if (combatVisual && time >= combatVisual.endAt) combatVisual = null;
@@ -1210,14 +1232,15 @@ export function createRenderer(
       //     / 不可行动 mapcursor-wrong
       //   我们的等价状态：可指挥=暖黄、已行动=灰、被选中的敌方=红。
       const pose = cursorPose(selected);
-      // 呼吸动画：每 360ms 在两种半径间跳一次（对齐参考里的逐帧感，不做平滑插值）
+      // 呼吸：每 360ms 在内环的**亮色/常规色**之间切换（对齐参考里的逐帧感）。
+      // 注意别对 hex 字符串做 `+ 1` —— 那会拼出 "#fff2c01" 这种非法颜色。
       const beat = Math.floor(time / 360) % 2;
       ringCursor(
         ctx,
         selected.x * TILE,
         selected.y * TILE,
         pose.outer,
-        pose.inner + (beat ? 0 : 1),
+        beat ? pose.hot : pose.inner,
       );
     }
     if (scene.preview)
