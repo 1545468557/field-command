@@ -360,8 +360,13 @@ html body .battle-turn strong {
 
 .command-list {
   position: fixed !important;
-  left: var(--menu-left, calc(50% - 88px)) !important;
-  top: var(--menu-top, 56vh) !important;
+  /* ★ 定位语义已从「左上角」改成「中心点」：配下面的 translate(-50%,-50%)，
+     这样 CSS 只负责画盒子，避让计算全部交给 app.mjs 的 positionCommandMenu()。
+     旧版是「单位下方居中」——实测会正好压住刚点出来的移动范围格，
+     用户点不到目的地（截图为证）。现在改成侧向展开，理由见那个函数。 */
+  left: var(--menu-left, 50%) !important;
+  top: var(--menu-top, 50%) !important;
+  transform: translate(-50%, -50%) !important;
   z-index: 29 !important;
   display: flex !important;
   flex-direction: column !important;

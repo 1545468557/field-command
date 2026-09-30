@@ -10,6 +10,7 @@ import {
 } from "./shared/engine.mjs";
 import { createRenderer, TEAM_COLORS } from "./renderer.mjs";
 import { paintCombatScene, COMBAT_TIMING, combatDuration } from "./combat-scene.mjs";
+import { commandMenuPosition } from "./shared/hud-layout.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) =>
@@ -910,12 +911,26 @@ const COMMAND_DESCRIPTIONS = {
 let menuAnchor = null;
 
 /**
- * 把命令菜单贴到单位旁边（F5）。
+ * 把命令菜单贴到屏幕边缘（F5 修订二）。
  *
- * 高级战争的菜单是**紧贴单位弹出**的，不是钉在屏幕角落。坐标由渲染器
- * 给出（`tileToScreen`，与命中测试**同源**），所以 cover/contain 切换、
- * 窗口缩放、DPR 变化都不会错位。
- * 拿到锚点后再夹紧一次，避免菜单跑出视口或压住底部说明栏。
+ * 坐标由渲染器给出（`tileToScreen`，与命中测试**同源**），所以 cover/contain
+ * 切换、窗口缩放、DPR 变化都不会错位。
+ *
+ * ★ 为什么从「单位下方居中」改成「贴边」：
+ *   旧版把菜单挂在单位正下方、水平居中。实测（用户截图）选中部队后，
+ *   移动范围高亮正在单位四周铺开，菜单正好糊在这一片范围格上——
+ *   用户想点目的地却点到了菜单，主观感受就是「会挡住」。
+ *
+ * ★ 为什么不是「贴单位侧边」（本函数的第一版修订）：
+ *   算过账——菜单中心放在单位格左/右外侧 31px 处时，菜单内边缘仍会
+ *   压住相邻格（reach 只有 31px，而菜单半宽 88px），范围照样被切。
+ *   只要菜单挨着单位，就必然吃掉范围的一部分。
+ *   **唯一真正不挖洞的位置是战场中央之外的死区**，也就是屏幕边缘。
+ *
+ * ★ 为什么按「单位在哪半边」选边：贴边虽然不挡操作，但离单位越远、
+ *   鼠标行程越长。单位在左半屏就贴左边缘、在右半屏就贴右边缘，
+ *   是「不挡」和「就近」的折中点；同时菜单出现位置可预测（永远在自家那侧），
+ *   比忽左忽右更好用。
  */
 function positionCommandMenu(menu, tileX, tileY) {
   if (!menu) return;
@@ -933,16 +948,17 @@ function positionCommandMenu(menu, tileX, tileY) {
   const place = () => {
     const box = menu.getBoundingClientRect();
     if (!box.width || !box.height) return;
-    const gap = Math.max(10, anchor.cell * 0.62);
-    let left = anchor.x - box.width / 2;
-    let top = anchor.y + gap;
-    left = Math.max(10, Math.min(left, window.innerWidth - box.width - 10));
-    // 下方放不下就翻到单位上方
-    if (top + box.height > window.innerHeight - 44)
-      top = anchor.y - gap - box.height;
-    top = Math.max(92, Math.min(top, window.innerHeight - box.height - 38));
-    menu.style.setProperty("--menu-left", `${Math.round(left)}px`);
-    menu.style.setProperty("--menu-top", `${Math.round(top)}px`);
+    const { cx, cy } = commandMenuPosition({
+      anchorX: anchor.x,
+      anchorY: anchor.y,
+      menuW: box.width,
+      menuH: box.height,
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+      cell: anchor.cell,
+    });
+    menu.style.setProperty("--menu-left", `${Math.round(cx)}px`);
+    menu.style.setProperty("--menu-top", `${Math.round(cy)}px`);
   };
   place();
   // 点阵字体 swap 进来后高度会变，再量一次
@@ -1011,14 +1027,25 @@ function renderSelection() {
       }
       if (!targetId) {
         const moving = destination && (pos.x !== unit.x || pos.y !== unit.y);
-        commands += `<button data-command="wait" data-desc="${moving ? "移动到目的地后结束这支部队本回合的行动。" : "原地不动，结束这支部队本回合的行动。"}">${moving ? "移动并待机" : "原地待机"}</button>`;
-        if (canCapture)
-          commands +=
-            '<button data-command="capture">⚑ 占领据点</button>';
-        if (unit.type === "apc")
-          commands += '<button data-command="supply">补给邻近部队</button>';
+        // ★ 只有「落点已确认」（destination 存在）才铺指令。
+        //   之前是选中即弹，菜单会长期挂在屏幕上压住战场——用户反馈
+        //   「不要这样一直出现」。高级战争的实际节奏也是：先移动、
+        //   落点定下来，指令菜单才出现。
+        //   原地待机没被砍掉：点部队自己所在格同样写 destination
+        //   （它在 reachable 里），菜单里就是「原地待机」。
+        if (destination) {
+          commands += `<button data-command="wait" data-desc="${moving ? "移动到目的地后结束这支部队本回合的行动。" : "原地不动，结束这支部队本回合的行动。"}">${moving ? "移动并待机" : "原地待机"}</button>`;
+          if (canCapture)
+            commands +=
+              '<button data-command="capture">⚑ 占领据点</button>';
+          if (unit.type === "apc")
+            commands += '<button data-command="supply">补给邻近部队</button>';
+        }
       }
-      commands += `<button data-command="cancel">${destination || targetId ? "取消预选" : "取消选择"}</button>`;
+      // 没有可下达的指令就连「取消」也不给——整块菜单收起来，
+      // 屏幕上只剩战场（`.command-list:empty{display:none}` 会兜住）。
+      if (commands)
+        commands += `<button data-command="cancel">${destination || targetId ? "取消预选" : "取消选择"}</button>`;
     }
     panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">${esc(names[unit.owner])} / UNIT ${esc(unit.id)}</span><h2>${esc(definition.name)}</h2></div><span class="hp-badge">${unit.hp}<small>兵力 / 10</small></span></div><div class="selection-content"><div class="unit-stats"><div><span>移动 / 射程</span><strong>${definition.move} / ${definition.minRange}–${definition.maxRange}</strong></div><div><span>弹药 / 燃料</span><strong>${unit.ammo === null || unit.ammo === undefined ? "∞" : unit.ammo} / ${Math.floor(unit.fuel || 0)}</strong></div><div><span>地形防御</span><strong>${TERRAINS[tile.type]?.defense || 0} ★</strong></div></div>${combat}<p>${can ? (targetId ? "确认后结算伤害与反击。" : destination ? "目的地已预选。再点一次目的地即可移动，或点红色目标攻击。" : "按住部队拖出红色箭头选路线，或点击青色格预选移动。") : unit.acted ? "该部队已行动，下个己方回合恢复。" : unit.owner !== session.seat ? "观察敌我部署，利用射程与地形安排推进。" : "等待己方回合后可下达指令。"}</p>${["city", "factory", "hq"].includes(tile.type) ? `<p>据点：${tile.owner === null ? "中立" : esc(names[tile.owner])} · 剩余占领值 ${tile.capture ?? 20}</p>` : ""}<div class="command-list">${commands}</div></div>`;
     // ★ F5：命令菜单贴单位弹出 + 底部说明栏给默认文案
@@ -1028,7 +1055,9 @@ function renderSelection() {
       can
         ? targetId
           ? COMMAND_DESCRIPTIONS.attack
-          : "选择指令下达给这支部队。"
+          : destination
+            ? "落点已确认：选择指令，或点别的青格改选落点。"
+            : "拖动部队拉出路线，或点击青色格预选落点；点部队自己可原地待机。"
         : unit.acted
           ? "这支部队本回合已经行动过了，下个己方回合恢复。"
           : unit.owner !== session.seat
