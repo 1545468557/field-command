@@ -884,6 +884,103 @@ function renderBattle() {
   renderSelection();
   updateScene();
 }
+/**
+ * 底部说明栏文案（F5）。
+ *
+ * 高级战争界面底部常驻一条说明栏，实时解释当前高亮项——这是它
+ * 「不啰嗦但信息全」的关键。原来我们把这些解释写成段落塞在右侧栏，
+ * 既占版面又像网页正文。现在收成一行。
+ */
+function setCommandBar(text) {
+  const el = $("#command-bar-text");
+  if (el) el.textContent = text || "";
+}
+
+/** 命令说明表。AW 的说明栏就是这种「一句话到底」的写法。 */
+const COMMAND_DESCRIPTIONS = {
+  attack: "对目标发起攻击。确认后立即结算，双方可能互相造成伤害。",
+  wait: "结束这支部队本回合的行动，下个己方回合恢复。",
+  capture: "占领脚下据点。占领值降到 0 后据点归你所有。",
+  supply: "为相邻的己方部队补充弹药与燃料。",
+  cancel: "取消当前预选，回到未选定状态。",
+  build: "在工厂部署一支新部队，新部队下个回合才能行动。",
+};
+
+/** 当前命令菜单该贴在哪个格子（由 renderSelection 各分支设置）。 */
+let menuAnchor = null;
+
+/**
+ * 把命令菜单贴到单位旁边（F5）。
+ *
+ * 高级战争的菜单是**紧贴单位弹出**的，不是钉在屏幕角落。坐标由渲染器
+ * 给出（`tileToScreen`，与命中测试**同源**），所以 cover/contain 切换、
+ * 窗口缩放、DPR 变化都不会错位。
+ * 拿到锚点后再夹紧一次，避免菜单跑出视口或压住底部说明栏。
+ */
+function positionCommandMenu(menu, tileX, tileY) {
+  if (!menu) return;
+  if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
+  const anchor =
+    typeof battleRenderer?.tileToScreen === "function"
+      ? battleRenderer.tileToScreen(tileX, tileY)
+      : null;
+  if (!anchor) {
+    // 画布还没布局完（首次渲染），退回 CSS 里的居中兜底值
+    menu.style.removeProperty("--menu-left");
+    menu.style.removeProperty("--menu-top");
+    return;
+  }
+  const place = () => {
+    const box = menu.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    const gap = Math.max(10, anchor.cell * 0.62);
+    let left = anchor.x - box.width / 2;
+    let top = anchor.y + gap;
+    left = Math.max(10, Math.min(left, window.innerWidth - box.width - 10));
+    // 下方放不下就翻到单位上方
+    if (top + box.height > window.innerHeight - 44)
+      top = anchor.y - gap - box.height;
+    top = Math.max(92, Math.min(top, window.innerHeight - box.height - 38));
+    menu.style.setProperty("--menu-left", `${Math.round(left)}px`);
+    menu.style.setProperty("--menu-top", `${Math.round(top)}px`);
+  };
+  place();
+  // 点阵字体 swap 进来后高度会变，再量一次
+  requestAnimationFrame(place);
+}
+
+/** 给命令按钮挂上「悬停/聚焦 → 更新底部说明栏」。 */
+function wireCommandDescriptions(list) {
+  list.querySelectorAll("[data-command]").forEach((button) => {
+    // 按钮上的 data-desc 优先（文案随状态变化时用得到），否则查表
+    const desc =
+      button.dataset.desc || COMMAND_DESCRIPTIONS[button.dataset.command];
+    if (!desc) return;
+    const show = () => setCommandBar(desc);
+    button.addEventListener("mouseenter", show);
+    button.addEventListener("focus", show);
+  });
+}
+
+/**
+ * 指挥室抽屉（F5）。
+ * 高级战争平时屏幕上**没有** CO 信息面板——那是「按需打开」的菜单项。
+ * 所以把指挥官 / 能量 / 战况电台收进抽屉，默认全隐藏，
+ * 只留右侧边缘一个小按钮随时开合。关掉时屏幕上只剩战场。
+ */
+function roomOpen() {
+  return !!document.querySelector(".command-sidebar.room-open");
+}
+function toggleRoom(open) {
+  const sidebar = document.querySelector(".command-sidebar");
+  if (!sidebar) return;
+  const next =
+    open === undefined ? !sidebar.classList.contains("room-open") : !!open;
+  sidebar.classList.toggle("room-open", next);
+  $("#drawer-toggle")?.setAttribute("aria-pressed", String(next));
+}
+$("#drawer-toggle")?.addEventListener("click", () => toggleRoom());
+
 function renderSelection() {
   const panel = $("#selection-panel"),
     state = room.state,
@@ -913,15 +1010,31 @@ function renderSelection() {
         }
       }
       if (!targetId) {
-        commands += `<button data-command="wait">${destination && (pos.x !== unit.x || pos.y !== unit.y) ? "移动并待机" : "原地待机"}</button>`;
+        const moving = destination && (pos.x !== unit.x || pos.y !== unit.y);
+        commands += `<button data-command="wait" data-desc="${moving ? "移动到目的地后结束这支部队本回合的行动。" : "原地不动，结束这支部队本回合的行动。"}">${moving ? "移动并待机" : "原地待机"}</button>`;
         if (canCapture)
-          commands += '<button data-command="capture">⚑ 占领据点</button>';
+          commands +=
+            '<button data-command="capture">⚑ 占领据点</button>';
         if (unit.type === "apc")
           commands += '<button data-command="supply">补给邻近部队</button>';
       }
       commands += `<button data-command="cancel">${destination || targetId ? "取消预选" : "取消选择"}</button>`;
     }
     panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">${esc(names[unit.owner])} / UNIT ${esc(unit.id)}</span><h2>${esc(definition.name)}</h2></div><span class="hp-badge">${unit.hp}<small>兵力 / 10</small></span></div><div class="selection-content"><div class="unit-stats"><div><span>移动 / 射程</span><strong>${definition.move} / ${definition.minRange}–${definition.maxRange}</strong></div><div><span>弹药 / 燃料</span><strong>${unit.ammo === null || unit.ammo === undefined ? "∞" : unit.ammo} / ${Math.floor(unit.fuel || 0)}</strong></div><div><span>地形防御</span><strong>${TERRAINS[tile.type]?.defense || 0} ★</strong></div></div>${combat}<p>${can ? (targetId ? "确认后结算伤害与反击。" : destination ? "目的地已预选。再点一次目的地即可移动，或点红色目标攻击。" : "按住部队拖出红色箭头选路线，或点击青色格预选移动。") : unit.acted ? "该部队已行动，下个己方回合恢复。" : unit.owner !== session.seat ? "观察敌我部署，利用射程与地形安排推进。" : "等待己方回合后可下达指令。"}</p>${["city", "factory", "hq"].includes(tile.type) ? `<p>据点：${tile.owner === null ? "中立" : esc(names[tile.owner])} · 剩余占领值 ${tile.capture ?? 20}</p>` : ""}<div class="command-list">${commands}</div></div>`;
+    // ★ F5：命令菜单贴单位弹出 + 底部说明栏给默认文案
+    menuAnchor = { x: pos.x, y: pos.y };
+    wireCommandDescriptions(panel);
+    setCommandBar(
+      can
+        ? targetId
+          ? COMMAND_DESCRIPTIONS.attack
+          : "选择指令下达给这支部队。"
+        : unit.acted
+          ? "这支部队本回合已经行动过了，下个己方回合恢复。"
+          : unit.owner !== session.seat
+            ? `敌方 ${esc(definition.name)}：观察部署，注意它的射程与所在地形。`
+            : "等待己方回合后再下达指令。",
+    );
     panel.querySelectorAll("[data-command]").forEach(
       (button) =>
         (button.onclick = () => {
@@ -949,11 +1062,47 @@ function renderSelection() {
       factory = tile.type === "factory" && tile.owner === session.seat,
       owner = tile.owner === null ? "中立区域" : names[tile.owner];
     panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">TERRAIN / ${selectedTile.x + 1}:${selectedTile.y + 1}</span><h2>${esc(type.name)}</h2></div><span class="hp-badge">${type.defense || 0}<small>防御星级</small></span></div><div class="selection-content"><p>${esc(owner)}${["city", "factory", "hq"].includes(tile.type) ? " · 据点每回合提供资金。友方地面部队在此可维修补给。" : ""}</p><p>${factory ? "选择新部队部署到工厂。新生产的单位下个回合才能行动。" : tile.type === "water" ? "陆军无法穿越水域，请寻找桥梁。" : tile.type === "mountain" ? "步兵可登山，车辆需要绕行。" : "地形会影响移动消耗与防御。"}</p>${factory ? `<div class="command-list"><button id="open-build" ${!isMyTurn() || busy ? "disabled" : ""}>＋ 部署部队</button></div>` : ""}</div>`;
+    // ★ F5：地形的说明也进底部说明栏（原来是面板里的两段散文）
+    menuAnchor = { x: selectedTile.x, y: selectedTile.y };
+    const buildButton = panel.querySelector("#open-build");
+    if (buildButton) buildButton.dataset.desc = COMMAND_DESCRIPTIONS.build;
+    wireCommandDescriptions(panel);
+    setCommandBar(
+      factory
+        ? "己方工厂：可以部署新部队。"
+        : `${type.name}｜${esc(owner)}${
+            ["city", "factory", "hq"].includes(tile.type)
+              ? " · 据点每回合提供资金，友方地面部队在此可维修补给"
+              : ""
+          }`,
+    );
     if (factory)
       $("#open-build").onclick = () =>
         showBuild(selectedTile.x, selectedTile.y);
-  } else
+  } else {
+    menuAnchor = null;
     panel.innerHTML = `<div class="selection-hint"><div class="crosshair">⌖</div><h3>${isMyTurn() ? "选择一支部队" : "观察战场"}</h3><p>${isMyTurn() ? "点击己方单位查看行动范围。<br>点击空闲的己方工厂生产部队。" : "查看部队与地形，规划下一回合。<br>其他玩家的行动会实时同步。"}</p></div>`;
+    setCommandBar(
+      isMyTurn()
+        ? "点击己方部队开始行动；点击己方工厂生产新部队。"
+        : "观察战场，规划下一回合。其他玩家的行动会实时同步。",
+    );
+  }
+
+  // ★ F5：把命令菜单搬到面板外（`#command-menu-host`）再定位。
+  //
+  // 为什么必须搬：`.command-sidebar .panel` 带 `backdrop-filter`，
+  // 而 backdrop-filter 会为 fixed 定位的后代**建立包含块**，
+  // 于是菜单的 left/top 变成相对面板算，而不是视口 → 菜单跑到屏幕外。
+  // 第一版就踩了这个坑：测试全绿，菜单却根本看不见。
+  // 搬到 `.battle-layout` 下（祖先无 transform/filter），坐标才是真·视口坐标。
+  const menuHost = $("#command-menu-host");
+  const menu = panel.querySelector(".command-list");
+  if (menuHost) menuHost.replaceChildren();
+  if (menuHost && menu) {
+    menuHost.appendChild(menu);
+    positionCommandMenu(menu, menuAnchor?.x, menuAnchor?.y);
+  }
 }
 async function performAction(action) {
   if (busy || !session || !room?.state) return;
@@ -1282,6 +1431,11 @@ document.addEventListener("keydown", (event) => {
   if (modal.open) return;
   if (screen !== "battle") return;
   if (event.key === "Escape") {
+    if (roomOpen()) {
+      // 指挥室抽屉开着时，Esc 先关抽屉（就近原则）
+      toggleRoom(false);
+      return;
+    }
     if (holdPreviewId !== null || dragArrowPath) {
       // 长按预览/拖拽箭头最临时，Esc 优先清它
       clearHoldPreview();

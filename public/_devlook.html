@@ -8,11 +8,18 @@
       做法：同源 fetch 真实 index.html，抽出 .topbar 与 #battle 原样注入，
             所以 DOM 与线上 100% 一致，不存在"我手抄漏了一个 class"的问题。
       然后挂真实 renderer 并塞入一个完整的 scene（选中/范围/箭头/伤害浮标）。
+
+      ★ 侧栏内容必须**逐字复刻 app.mjs:renderSelection() 的 innerHTML**，
+        否则截图会失真——我第一版就是手写了个旧结构（用 panel-heading），
+        结果 F5 的 `#selection-panel .selection-top` 选择器根本匹配不上，
+        "看起来改了、其实没改"。
+
       ★ 与 / 的区别：这里不加载 app.mjs，因此没有 SSE 常连接，
         headless 截图能正常结束。
     -->
     <link rel="stylesheet" href="/style.css" />
     <link rel="stylesheet" href="/aw-ui.css" />
+    <link rel="stylesheet" href="/aw-hud.css" />
     <style>
       html, body { margin: 0; background: #050d0c; }
     </style>
@@ -59,7 +66,7 @@
         if (score > farScore) { farScore = score; far = c; }
       }
 
-      // —— 填动态内容（平时由 app.mjs 填，这里给静态样例）——
+      // —— 填动态内容 ——
       const $ = (s) => battle.querySelector(s);
       $("#battle-map-title").textContent = "双桥河谷";
       $("#day-number").textContent = "03";
@@ -68,8 +75,9 @@
       $("#funds").textContent = "12,400";
       $("#energy-value").textContent = "62 / 100";
       $("#energy-fill").style.width = "62%";
-      $("#field-status").innerHTML = '<i class="tiny-dot"></i> 步兵 · 待命中';
+      $("#field-status").innerHTML = '<i class="tiny-dot"></i> 坦克 · 待命中';
       $("#field-hover").textContent = "拖拽可规划路线，松手执行";
+      $("#command-bar-text").textContent = "选择指令下达给这支部队。";
 
       $("#player-strip").innerHTML = [
         { id: 0, n: "红方", u: 6, c: 3, on: true },
@@ -85,14 +93,24 @@
         )
         .join("");
 
-      const sel = $("#selection-panel");
-      if (sel) {
-        sel.innerHTML =
-          '<div class="panel-heading"><h2>步兵 · INFANTRY</h2><span class="eyebrow">HP 10/10</span></div>' +
-          '<div class="unit-stats"><div><strong>3</strong><span>移动</span></div>' +
-          '<div><strong>5</strong><span>火力</span></div>' +
-          '<div><strong>1</strong><span>射程</span></div></div>';
-      }
+      // ★ 逐字复刻 app.mjs:renderSelection() 里 unit 分支的 innerHTML
+      const typeName = { tank: "坦克", infantry: "步兵", mech: "机甲步兵", apc: "装甲运兵车" }[myUnit.type] || myUnit.type;
+      battle.querySelector("#selection-panel").innerHTML =
+        `<div class="selection-top"><div><span class="eyebrow">红方 / UNIT ${myUnit.id}</span><h2>${typeName}</h2></div><span class="hp-badge">${myUnit.hp}<small>兵力 / 10</small></span></div>` +
+        `<div class="selection-content">` +
+        `<div class="unit-stats">` +
+        `<div><span>移动 / 射程</span><strong>6 / 1–1</strong></div>` +
+        `<div><span>弹药 / 燃料</span><strong>9 / 70</strong></div>` +
+        `<div><span>地形防御</span><strong>2 ★</strong></div>` +
+        `</div>` +
+        `<div class="combat-preview"><span>步兵<strong>−7 HP</strong></span><span>预计反击<strong>−3 HP</strong></span></div>` +
+        `<p>按住部队拖出红色箭头选路线，或点击青色格预选移动。</p>` +
+        `<div class="command-list">` +
+        `<button class="attack-command" data-command="attack">确认攻击</button>` +
+        `<button data-command="wait">原地待机</button>` +
+        `<button data-command="cancel">取消选择</button>` +
+        `</div>` +
+        `</div>`;
 
       const renderer = createRenderer(battle.querySelector("#battle-canvas"), {});
       renderer.setScene({
@@ -109,7 +127,37 @@
       renderer.resize();
       renderer.setArrowPath([{ x: myUnit.x, y: myUnit.y }, ...(far.path || [])], "own");
       renderer.render();
-      document.title = `READY ${myUnit.type} path=${(far.path || []).length}`;
+
+      // 复刻 app.mjs:renderSelection() 末尾的「菜单搬家 + 定位」。
+      // 必须搬出 #selection-panel：那一层带 backdrop-filter，
+      // 会给 fixed 后代建立包含块，坐标就不是视口坐标了。
+      const menuHost = battle.querySelector("#command-menu-host");
+      const menu = battle.querySelector("#selection-panel .command-list");
+      let menuInfo = "no-menu";
+      if (menuHost && menu) {
+        menuHost.replaceChildren();
+        menuHost.appendChild(menu);
+      }
+      const anchor = renderer.tileToScreen(myUnit.x, myUnit.y);
+      if (anchor && menu) {
+        const place = () => {
+          const box = menu.getBoundingClientRect();
+          if (!box.width || !box.height) return;
+          const gap = Math.max(10, anchor.cell * 0.62);
+          let left = anchor.x - box.width / 2;
+          let top = anchor.y + gap;
+          left = Math.max(10, Math.min(left, window.innerWidth - box.width - 10));
+          if (top + box.height > window.innerHeight - 44)
+            top = anchor.y - gap - box.height;
+          top = Math.max(92, Math.min(top, window.innerHeight - box.height - 38));
+          menu.style.setProperty("--menu-left", `${Math.round(left)}px`);
+          menu.style.setProperty("--menu-top", `${Math.round(top)}px`);
+          menuInfo = `anchor=(${Math.round(anchor.x)},${Math.round(anchor.y)}) cell=${anchor.cell.toFixed(1)} menu=(${Math.round(left)},${Math.round(top)}) ${Math.round(box.width)}x${Math.round(box.height)}`;
+        };
+        place();
+        requestAnimationFrame(place);
+      }
+      document.title = `READY ${myUnit.type} path=${(far.path || []).length} | ${menuInfo}`;
     </script>
   </body>
 </html>

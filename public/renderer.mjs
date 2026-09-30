@@ -1563,6 +1563,67 @@ export function createRenderer(
   frame = requestAnimationFrame(tick);
   return {
     setScene,
+    /**
+     * 格坐标 → 视口坐标（★ 2026-09-30 新增）。
+     *
+     * 用途：UI 层要把「命令菜单」贴在单位旁边（高级战争就是这么做的——
+     * 菜单紧贴单位弹出，不是固定在屏幕角落）。所以 UI 需要一个
+     * 「这一格现在画在屏幕哪儿」的换算。
+     *
+     * 算式与 eventTile() **完全同源**：同样按 object-fit（contain/cover）
+     * 与 object-position 求内容框，再取格子中心。这样 cover 裁切、
+     * 窗口缩放、DPR 变化都不会让菜单和格子错位。
+     * 两份算式必须一起改，别只改一边。
+     */
+    tileToScreen(tileX, tileY) {
+      const state = scene.state;
+      if (!state) return null;
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const style =
+        typeof getComputedStyle === "function" ? getComputedStyle(canvas) : null;
+      const px = (name) => parseFloat(style?.[name]) || 0;
+      const leftInset = px("borderLeftWidth") + px("paddingLeft");
+      const topInset = px("borderTopWidth") + px("paddingTop");
+      const boxWidth =
+        rect.width - leftInset - px("borderRightWidth") - px("paddingRight");
+      const boxHeight =
+        rect.height - topInset - px("borderBottomWidth") - px("paddingBottom");
+      let contentWidth = boxWidth,
+        contentHeight = boxHeight;
+      let contentLeft = rect.left + leftInset,
+        contentTop = rect.top + topInset;
+      if (
+        style?.objectFit === "contain" ||
+        style?.objectFit === "cover" ||
+        style?.objectFit === "scale-down"
+      ) {
+        const ratios = [boxWidth / logicalWidth, boxHeight / logicalHeight];
+        const ratio =
+          style.objectFit === "cover" ? Math.max(...ratios) : Math.min(...ratios);
+        contentWidth = logicalWidth * ratio;
+        contentHeight = logicalHeight * ratio;
+        const position = (style.objectPosition || "50% 50%").split(/\s+/);
+        const offset = (value, space) => {
+          if (value === "left" || value === "top") return 0;
+          if (value === "right" || value === "bottom") return space;
+          if (!value || value === "center") return space / 2;
+          return value.endsWith("%")
+            ? ((parseFloat(value) || 0) * space) / 100
+            : parseFloat(value) || 0;
+        };
+        contentLeft += offset(position[0], boxWidth - contentWidth);
+        contentTop += offset(position[1], boxHeight - contentHeight);
+      }
+      const cell = contentWidth / state.width;
+      return {
+        x: contentLeft + (tileX + 0.5) * cell,
+        y: contentTop + (tileY + 0.5) * cell,
+        cell,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      };
+    },
     setHoverPreview(cells) {
       if (destroyed) return;
       const next = cells && cells.length ? cells : null;
