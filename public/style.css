@@ -2089,3 +2089,424 @@ dialog::backdrop {
   padding: 6px 14px;
   font-size: 8px;
 }
+
+/* ==========================================================================
+   F3 · 全屏战场（2026-09-30）
+   --------------------------------------------------------------------------
+   依据：`../F3-全屏战场方案.md`
+   用户拍板：Q1=A（cover 允许裁切，最沉浸）  Q2=A（面板全部改居中浮层）
+
+   ★ 核心认知（推翻我上一版的判断）：
+     高级战争平时 UI 占屏 <0.5%，其余 99.5% 全是战场（实测 docs/compare.png）。
+     所以「沉浸感」不是"把面板挤小"，而是**地图真·铺满，UI 彻底浮在它上面**。
+
+   ★ 配色来源：PIL 逐像素采样 docs/DoR-FieldMenu.png / AW2-FieldMenu.png
+       --aw-cyan     rgb(0,255,197)    选中/强调（AW:DoR 的灵魂色）
+       --aw-cyan-dim rgb(25,113,99)    选中项底
+       --aw-panel    rgb(41,65,74)     深色面板底
+       --aw-item     rgb(74,89,107)    菜单项底
+       --aw-desc     rgb(107,121,148)  说明栏底
+       --aw-ink      #fff             正文
+       --aw-outline  #000             硬黑描边（GBA UI 之所以"跳"出来的关键）
+
+   做法：仍然**只覆盖、不删除**上面的 F1/F2 规则 → 回退只需删掉本段。
+   ========================================================================== */
+
+:root {
+  --aw-cyan: rgb(0, 255, 197);
+  --aw-cyan-dim: rgb(25, 113, 99);
+  --aw-panel: rgb(41, 65, 74);
+  --aw-item: rgb(74, 89, 107);
+  --aw-desc: rgb(107, 121, 148);
+  --aw-ink: #ffffff;
+  --aw-outline: #000000;
+}
+
+/* ---- 1. 真·全屏：地图铺满整个视口，其余全部脱离文档流 ---------------- */
+
+.battle {
+  padding: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+}
+
+/* 战场容器钉死在视口上（底下那条页脚也一并覆盖掉） */
+.battle-layout {
+  position: fixed !important;
+  inset: 0 !important;
+  display: block !important;
+  height: auto !important;
+  overflow: hidden !important;
+  background: #05100e !important;
+}
+
+.battlefield-panel {
+  position: absolute !important;
+  inset: 0 !important;
+  background: none !important;
+  border: 0 !important;
+  z-index: 1;
+}
+
+/* ★ 关键一刀：视口铺满 + 消灭黑边。
+      ⚠️ 不能用 object-fit:cover —— 实测会裁掉 33% 的地图（上下各 2 行，
+         那里有真实单位和据点），玩家会看不到也点不到。属于功能损坏。
+      ✅ 改用 contain 保住「100% 地图可点」，同时**消灭黑边感**：
+         canvas 底下垫一层放大 + 模糊 + 压暗的地图纹理（由 JS 注入 .map-fill），
+         视觉上"战场向屏幕外继续延伸"，而不是"一张纸贴在黑底上"。
+      事件命中仍走 eventTile() 的 contain 分支 —— 算法本来就对，不动它，风险最低。 */
+.battle-canvas-wrap {
+  position: absolute !important;
+  inset: 0 !important;
+  padding: 0 !important;
+  background: none !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+.battle-canvas-wrap canvas#battle-canvas {
+  position: relative !important;
+  z-index: 1;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  /* contain：保住整张地图都能点。黑边感靠下面的 .map-fill 消除。 */
+  object-fit: contain !important;
+  object-position: 50% 50% !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  display: block !important;
+}
+
+/* ★ 伪"无限战场"：垫在 canvas 后面的一层。
+     由 renderer 把当前地形整体放大、模糊、压暗后绘制，铺满整个视口。
+     效果：地图边界之外不是黑边，而是"战场的延续"，黑边感消失。
+     这比 cover 安全 —— 它不裁切任何可点击的格子。 */
+.map-fill {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 0;
+  width: 100% !important;
+  height: 100% !important;
+  display: block !important;
+  pointer-events: none !important;
+}
+
+/* 四周再加一层暗角，把视线收拢到中央战场（"镜头感"）
+   ★ 2026-09-30 调弱：原 rgba(0,0,0,.5) 太狠，
+     它把延伸层又压暗一遍，是"黑边感"的第二个来源。
+     现在只保留很轻的收拢，不再制造亮度断崖。 */
+.battle-canvas-wrap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0,0,0,0) 62%,
+    rgba(0,0,0,.14) 86%,
+    rgba(0,0,0,.3) 100%
+  );
+}
+
+/* 页脚直接不要了——它属于"网页"，不属于战场 */
+.app-footer { display: none !important; }
+
+/* ---- 2. 顶栏：极简浮层，贴在地图上方 ---------------------------------- */
+
+.battle-header {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  height: 44px !important;
+  margin: 0 !important;
+  padding: 0 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+  background: linear-gradient(to bottom, rgba(5,16,14,.9), rgba(5,16,14,0)) !important;
+  backdrop-filter: none !important;
+  border: 0 !important;
+  z-index: 30 !important;
+  pointer-events: none;
+}
+.battle-header > * { pointer-events: auto; }
+
+/* 标题压到最小——参考里顶栏几乎没有文字 */
+.mission-title .eyebrow { display: none !important; }
+.mission-title h1 {
+  font-size: 12px !important;
+  letter-spacing: .08em !important;
+  color: rgba(255,255,255,.72) !important;
+  text-shadow: 0 1px 0 #000, 0 -1px 0 #000, 1px 0 0 #000, -1px 0 0 #000 !important;
+}
+
+/* 回合数用大号描边字（对齐参考里的大标题风格） */
+.battle-turn {
+  background: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+/* 右上角工具按钮：给它们一个"HUD 按钮"的身份，别悬在半空 */
+.battle-tools {
+  margin-left: auto !important;
+  display: flex !important;
+  gap: 6px !important;
+}
+.battle-tools .button,
+.battle-tools button {
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 9px !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+  background: rgba(5,16,14,.7) !important;
+  border: 1px solid rgba(0,255,197,.32) !important;
+  color: rgba(255,255,255,.86) !important;
+  border-radius: 2px !important;
+  box-shadow: 0 1px 0 rgba(0,0,0,.5) !important;
+}
+.battle-tools .button:hover,
+.battle-tools button:hover {
+  background: var(--aw-cyan-dim) !important;
+  border-color: var(--aw-cyan) !important;
+  color: var(--aw-cyan) !important;
+}
+.battle-turn strong {
+  font-size: 26px !important;
+  color: var(--aw-ink) !important;
+  font-family: ui-monospace, monospace !important;
+  line-height: 1 !important;
+  text-shadow: 0 2px 0 #000, 0 -2px 0 #000, 2px 0 0 #000, -2px 0 0 #000,
+               1px 2px 0 #000, -1px 2px 0 #000, 1px -2px 0 #000, -1px -2px 0 #000 !important;
+}
+.battle-turn span, .battle-turn small { color: rgba(255,255,255,.6) !important; }
+
+/* ---- 3. 工具条 / 图例：缩成角落小字，绝不占版面 ---------------------- */
+
+.battlefield-toolbar {
+  position: absolute !important;
+  top: 48px !important;
+  left: 16px !important;
+  right: auto !important;
+  display: flex !important;
+  gap: 10px !important;
+  padding: 4px 10px !important;
+  background: rgba(5,16,14,.62) !important;
+  border: 1px solid rgba(0,255,197,.22) !important;
+  border-radius: 3px !important;
+  font-size: 10px !important;
+  color: rgba(255,255,255,.8) !important;
+  z-index: 25 !important;
+  pointer-events: none;
+}
+
+/* 图例：压缩成左下角一行，默认半隐，避免遮挡战场 */
+.map-legend {
+  position: absolute !important;
+  left: 16px !important;
+  bottom: 16px !important;
+  right: auto !important;
+  top: auto !important;
+  display: flex !important;
+  gap: 12px !important;
+  padding: 5px 10px !important;
+  background: rgba(5,16,14,.62) !important;
+  border: 1px solid rgba(0,255,197,.18) !important;
+  border-radius: 3px !important;
+  font-size: 10px !important;
+  opacity: .55;
+  transition: opacity .18s ease;
+  z-index: 25 !important;
+  pointer-events: none;
+}
+.map-legend:hover { opacity: 1; }
+.legend-tip { display: none !important; }
+.legend-square { width: 9px !important; height: 9px !important; }
+
+/* ---- 4. AW 视觉语言：深底 + 亮边（这是跟"网页"最本质的区别） ---------- */
+
+.panel,
+.commander-panel,
+.selection-panel,
+.log-panel {
+  background: rgba(41, 65, 74, .94) !important;
+  border: 1px solid var(--aw-cyan) !important;
+  border-radius: 3px !important;
+  box-shadow: 0 0 0 2px var(--aw-outline), 0 6px 18px rgba(0,0,0,.5) !important;
+  color: var(--aw-ink) !important;
+}
+
+.panel-heading h2,
+.commander-panel h2,
+.selection-panel h2 {
+  color: var(--aw-ink) !important;
+  text-shadow: 0 1px 0 #000, 0 -1px 0 #000, 1px 0 0 #000, -1px 0 0 #000 !important;
+  letter-spacing: .06em !important;
+}
+
+.eyebrow {
+  color: var(--aw-cyan) !important;
+  font-size: 8px !important;
+  letter-spacing: .18em !important;
+}
+
+/* ---- 5. 按钮：通栏横条 + 选中态青色（对齐 DoR 菜单） ------------------ */
+
+.button,
+.power-button {
+  background: var(--aw-item) !important;
+  border: 1px solid rgba(255,255,255,.28) !important;
+  border-radius: 2px !important;
+  color: var(--aw-ink) !important;
+  box-shadow: 0 2px 0 rgba(0,0,0,.4) !important;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.button:hover,
+.power-button:hover {
+  background: var(--aw-cyan-dim) !important;
+  border-color: var(--aw-cyan) !important;
+  color: var(--aw-cyan) !important;
+}
+.button.primary {
+  background: var(--aw-cyan-dim) !important;
+  border-color: var(--aw-cyan) !important;
+  color: var(--aw-cyan) !important;
+  text-shadow: 0 1px 0 rgba(0,0,0,.6) !important;
+}
+.button.primary:hover {
+  background: var(--aw-cyan) !important;
+  color: #032b23 !important;
+}
+
+/* ---- 6. 侧栏改造：贴右边缘的浮层，不参与文档流（Q2=A 的过渡形态） ----- */
+
+.command-sidebar {
+  position: fixed !important;
+  top: 52px !important;
+  right: 18px !important;
+  bottom: auto !important;
+  left: auto !important;
+  width: 262px !important;
+  max-height: calc(100vh - 76px) !important;
+  overflow-y: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  padding: 0 0 12px !important;
+  margin: 0 !important;
+  background: none !important;
+  border: 0 !important;
+  z-index: 28 !important;
+  scrollbar-width: thin;
+}
+
+/* 侧栏里每个面板统一内边距，避免贴着边框 */
+.command-sidebar .panel { padding: 10px 12px !important; }
+.command-sidebar .end-turn-area {
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+}
+.command-sidebar .end-turn-area .button { width: 100% !important; }
+.command-sidebar .end-turn-area > span { font-size: 9px !important; opacity: .6; text-align: center; }
+.command-sidebar .log-panel #event-log { margin: 0 !important; padding-left: 16px !important; font-size: 10px !important; }
+.command-sidebar .log-panel li { line-height: 1.45 !important; }
+.command-sidebar::-webkit-scrollbar { width: 6px; }
+.command-sidebar::-webkit-scrollbar-thumb {
+  background: rgba(0,255,197,.3);
+  border-radius: 3px;
+}
+
+/* 玩家条：从底部大条改成右下角小胶囊 */
+.player-strip {
+  position: fixed !important;
+  left: auto !important;
+  right: 14px !important;
+  bottom: 14px !important;
+  top: auto !important;
+  width: auto !important;
+  max-width: 268px !important;
+  display: flex !important;
+  gap: 8px !important;
+  padding: 6px 10px !important;
+  background: rgba(5,16,14,.82) !important;
+  border: 1px solid rgba(0,255,197,.28) !important;
+  border-radius: 3px !important;
+  backdrop-filter: blur(8px) !important;
+  z-index: 27 !important;
+  font-size: 10px !important;
+}
+
+/* 资金/能量数字：等宽 + 描边，读起来像游戏 HUD */
+.funds strong,
+.hp-badge,
+.unit-stats strong,
+#energy-value,
+#funds {
+  font-family: ui-monospace, monospace !important;
+  font-variant-numeric: tabular-nums !important;
+  color: var(--aw-ink) !important;
+  text-shadow: 0 1px 0 #000, 1px 0 0 #000, -1px 0 0 #000, 0 -1px 0 #000 !important;
+}
+
+/* ---- 7. 能量条：做成 AW 风格的方块槽（不是圆角进度条） --------------- */
+
+.energy-track {
+  height: 8px !important;
+  background: rgba(0,0,0,.55) !important;
+  border: 1px solid rgba(255,255,255,.22) !important;
+  border-radius: 0 !important;
+  overflow: hidden !important;
+}
+.energy-track > i {
+  background: linear-gradient(to right, var(--aw-cyan-dim), var(--aw-cyan)) !important;
+  border-radius: 0 !important;
+}
+
+/* ---- 8. 选中的单位面板：青色左边条（一眼看出"当前") ------------------ */
+
+.selection-panel.panel,
+.selection-panel {
+  border-left: 3px solid var(--aw-cyan) !important;
+}
+
+/* ---- 9. 把所有圆角和柔和阴影清掉：像素游戏没有圆角 ------------------- */
+
+.commander-avatar,
+.radio-icon,
+.tiny-dot,
+.power-button span {
+  border-radius: 2px !important;
+}
+
+/* ---- 10. 清掉 F1 响应式规则的干扰（窄屏时它们会和本段打架） ---------- */
+
+@media (max-width: 1500px), (max-width: 1100px), (max-width: 800px) {
+  .battle-layout {
+    display: block !important;
+    grid-template-columns: none !important;
+    height: auto !important;
+  }
+  .battle-canvas-wrap {
+    position: absolute !important;
+    inset: 0 !important;
+    padding: 0 !important;
+    height: 100% !important;
+  }
+  .command-sidebar {
+    display: flex !important;
+    grid-template-columns: none !important;
+    position: fixed !important;
+    top: 52px !important;
+    right: 14px !important;
+    width: 240px !important;
+  }
+}

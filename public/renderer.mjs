@@ -484,17 +484,28 @@ function corners(ctx, x, y, color, inset = 1, length = 7, thickness = 2) {
 function rangeTile(ctx, x, y, isTarget, index) {
   const ox = x * TILE,
     oy = y * TILE;
+  // 参考资产实测：AW 的范围是 rgb(144,216,170) 盖在草地上、**无边框**。
+  //
+  // ★ 调参记录（别凭感觉改，这是两次实测的结果）：
+  //   .30 → 单格 距离30/亮度+18，偏淡；
+  //   .42 → 单格 距离41/亮度+25，单看很清楚，**但成片铺开后把地形纹理糊掉了**
+  //         （范围常有 20~40 格，大面积叠加会让人看不清哪里是森林/城市/山地）。
+  //   → 定 .34：单格仍然可辨（距离≈35），成片时地形仍能透出来。
+  //   另一处关键：范围只画**底色**，不再叠任何边框/斜纹 —— 保持"光"的感觉。
   box(
     ctx,
     ox,
     oy,
     TILE,
     TILE,
-    // 参考资产实测：AW 的范围是 rgb(144,216,170) 盖在草地上、**无边框**。
-    // 之前 .30 透明度实测只有 距离30/亮度+18（偏淡），提到 .42 让其真正"亮起来"，
-    // 但仍保留无边框 —— 边框才是"控件感"的来源，不是浓度。
-    isTarget ? "rgba(240,104,78,.42)" : "rgba(122,224,168,.42)",
+    isTarget ? "rgba(240,104,78,.38)" : "rgba(122,224,168,.34)",
   );
+  // 站在可移动格上时，用极淡的内描边勾出格子轮廓（仅在放大后可见），
+  // 让人能数清格子，但远看仍是一片连续的光。
+  if (!isTarget) {
+    box(ctx, ox, oy, TILE, 1, "rgba(190,255,220,.10)");
+    box(ctx, ox, oy, 1, TILE, "rgba(190,255,220,.10)");
+  }
   // 只保留「可攻击目标」的中心准星，这是功能性提示而非装饰。
   if (isTarget) {
     box(ctx, ox + 17, oy + 6, 6, 2, "rgba(255,213,180,.92)");
@@ -625,6 +636,10 @@ export function createRenderer(
   const ctx = canvas.getContext("2d", { alpha: false });
   const terrainCanvas = document.createElement("canvas");
   const terrainCtx = terrainCanvas.getContext("2d", { alpha: false });
+  // ★ F3：垫在战场后面的「无限延伸」层（消除黑边感）。
+  // 从 DOM 里取同容器下的 #map-fill；拿不到就自动降级（不影响主渲染）。
+  const mapFillCanvas = document.getElementById("map-fill");
+  const fillCtx = mapFillCanvas ? mapFillCanvas.getContext("2d") : null;
   let scene = {
     state: null,
     // 光标配色需要知道"我是谁"（cursorPose 用）；由 app.mjs 通过 setScene 传入。
@@ -644,6 +659,8 @@ export function createRenderer(
   let frame = null,
     destroyed = false,
     terrainDirty = true,
+    // ★ F3：容器尺寸变化时需重画背景延伸层（它是按容器尺寸铺满的）。
+    mapFillDirty = true,
     lastFrameTime = 0;
   let logicalWidth = 0,
     logicalHeight = 0,
@@ -811,6 +828,80 @@ export function createRenderer(
     }
     terrainDirty = false;
   }
+
+  /**
+   * ★ F3 新增：给"黑边"解药。
+   *
+   * 为什么需要它：地图是 4:3、屏幕是 16:9，用 contain 保住全部可点格，
+   * 代价是左右/上下留出空白。**用 cover 硬裁会砍掉 33% 的地图**（实测），
+   * 那是功能损坏，不能做。
+   *
+   * 所以换思路：把已经画好的地形整体**放大 + 模糊 + 压暗**，铺满整个容器，
+   * 垫在战场后面。于是地图边界之外不是黑边，而是"战场的延续"。
+   * 这是"伪无限战场"——零裁切、零信息损失，但黑边感消失。
+   */
+  function paintMapFill() {
+    if (!mapFillCanvas || !fillCtx) return;
+    if (!logicalWidth || !logicalHeight) return;
+    const rect = canvas.getBoundingClientRect();
+    const boxW = Math.max(1, Math.round(rect.width));
+    const boxH = Math.max(1, Math.round(rect.height));
+    const fillDpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    if (
+      mapFillCanvas.width !== Math.round(boxW * fillDpr) ||
+      mapFillCanvas.height !== Math.round(boxH * fillDpr)
+    ) {
+      mapFillCanvas.width = Math.round(boxW * fillDpr);
+      mapFillCanvas.height = Math.round(boxH * fillDpr);
+    }
+    fillCtx.setTransform(fillDpr, 0, 0, fillDpr, 0, 0);
+    fillCtx.clearRect(0, 0, boxW, boxH);
+
+    // 放大到「铺满容器」的比例（cover 式），保证没有一处露底
+    const scale = Math.max(boxW / logicalWidth, boxH / logicalHeight);
+    const dw = logicalWidth * scale;
+    const dh = logicalHeight * scale;
+    const dx = (boxW - dw) / 2;
+    const dy = (boxH - dh) / 2;
+
+    fillCtx.save();
+    // ★ 亮度是关键参数（2026-09-30 实测定的，别凭感觉改）：
+    //   原 brightness(0.42) 出来的延伸层亮度只有 41~47，而地图内是 143，
+    //   中间是**一道 3.5 倍的亮度断崖** → 看上去就是"黑边/信箱框"。
+    //   提到 0.9 后延伸层 ≈ 125，与地图同量级，边界自然溶解，
+    //   读起来才像"战场在屏幕外继续"，而不是"视频黑边"。
+    //   模糊半径同时加大到 18，避免和地图内容产生重影。
+    fillCtx.filter = "blur(18px) brightness(0.9) saturate(0.72)";
+    // 放大一点再画，避免 blur 在边缘透出底色
+    fillCtx.drawImage(terrainCanvas, dx - 24, dy - 24, dw + 48, dh + 48);
+    fillCtx.restore();
+  }
+
+  /**
+   * 地图本体的边界：外 2px 硬黑 + 内 1px 亮青。
+   *
+   * 为什么需要它：消除黑边感之后，延伸层和地图的亮度接近了，
+   * 玩家反而分不清"可行动区域到哪为止"。所以边界必须**显式画出来**。
+   * 这不是装饰，是功能边界——和 AW 里"菜单框必须有一圈亮边"同一个理由。
+   */
+  function paintMapBorder() {
+    if (!logicalWidth || !logicalHeight) return;
+    const W = logicalWidth,
+      H = logicalHeight;
+    const OUT = "#000000";
+    const EDGE = "rgba(0,255,197,.5)";
+    // 外侧硬黑框（往外扩 2px，压住延伸层的过渡）
+    box(ctx, -2, -2, W + 4, 2, OUT);
+    box(ctx, -2, H, W + 4, 2, OUT);
+    box(ctx, -2, -2, 2, H + 4, OUT);
+    box(ctx, W, -2, 2, H + 4, OUT);
+    // 内侧亮边（1px，画在地图像素的最外圈上）
+    box(ctx, 0, 0, W, 1, EDGE);
+    box(ctx, 0, H - 1, W, 1, EDGE);
+    box(ctx, 0, 0, 1, H, EDGE);
+    box(ctx, W - 1, 0, 1, H, EDGE);
+  }
+
   function setScene(next) {
     if (destroyed) return;
     const state = next.state || scene.state;
@@ -1109,10 +1200,25 @@ export function createRenderer(
         captureVisuals.delete(key);
         if (visual.completed) terrainDirty = true;
       }
-    if (terrainDirty) rebuildTerrain();
+    // ⚠️ 顺序要紧：rebuildTerrain() 内部会把 terrainDirty 置回 false，
+    //    所以必须先取一份脏标记，再重建、再据此刷新背景层。
+    const terrainWasDirty = terrainDirty;
+    if (terrainWasDirty) rebuildTerrain();
+    // ★ F3：地形变了就同步刷新背景延伸层（消除黑边）。
+    // 走 blur 有成本，只在真正需要时做，不能每帧。
+    if (terrainWasDirty || mapFillDirty) {
+      paintMapFill();
+      mapFillDirty = false;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(terrainCanvas, 0, 0);
+    // ★ 地图边界（2026-09-30）。
+    //   背景延伸层让"世界"看起来在屏幕外继续，但玩家必须一眼看出
+    //   **哪一块是可行动区域**。所以给地图本体加一圈硬边：
+    //   外 2px 纯黑 + 内 1px 亮青。这不是装饰——是功能边界。
+    //   用硬边而不是柔和描边，正是 AW 的语言（深底 + 亮边 + 硬黑外框）。
+    paintMapBorder();
     paintDynamics(time);
     for (let i = 0; i < (scene.reachable?.length || 0); i++) {
       const t = scene.reachable[i];
@@ -1441,12 +1547,16 @@ export function createRenderer(
     typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
           size();
+          // ★ F3：容器尺寸变了 → 背景延伸层必须跟着重铺。
+          mapFillDirty = true;
           draw();
         })
       : null;
   observer?.observe(canvas);
   const onWindowResize = () => {
     size();
+    // ★ F3：背景延伸层是按容器尺寸铺满的，容器变了必须重画。
+    mapFillDirty = true;
     draw();
   };
   window.addEventListener("resize", onWindowResize);
@@ -1483,6 +1593,7 @@ export function createRenderer(
     render: () => draw(performance.now()),
     resize: () => {
       size();
+      mapFillDirty = true;
       draw(performance.now());
     },
     destroy() {

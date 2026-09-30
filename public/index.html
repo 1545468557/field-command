@@ -14,6 +14,8 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23141e22'/%3E%3Cpath d='M12 18h40v10H22v8h24v10H22v8H12z' fill='%23f27c56'/%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="/style.css" />
+    <!-- 高级战争界面语言层：必须在 style.css 之后。删掉这一行即回退。 -->
+    <link rel="stylesheet" href="/aw-ui.css" />
   </head>
   <body>
     <div id="app">
@@ -197,6 +199,10 @@
               ><span id="field-hover">选择单位以查看行动范围</span>
             </div>
             <div id="battle-canvas-wrap" class="battle-canvas-wrap">
+              <!-- F3：垫在战场后面的"无限延伸"层。
+                   地图之外不再是黑边，而是放大模糊后的地形，黑边感消失。
+                   由 renderer.mjs 绘制；不参与交互（pointer-events:none）。 -->
+              <canvas id="map-fill" class="map-fill" aria-hidden="true"></canvas>
               <canvas
                 id="battle-canvas"
                 tabindex="0"
