@@ -948,7 +948,7 @@ function positionCommandMenu(menu, tileX, tileY) {
   const place = () => {
     const box = menu.getBoundingClientRect();
     if (!box.width || !box.height) return;
-    const { cx, cy } = commandMenuPosition({
+    const { cx, cy, side, above } = commandMenuPosition({
       anchorX: anchor.x,
       anchorY: anchor.y,
       menuW: box.width,
@@ -959,6 +959,14 @@ function positionCommandMenu(menu, tileX, tileY) {
     });
     menu.style.setProperty("--menu-left", `${Math.round(cx)}px`);
     menu.style.setProperty("--menu-top", `${Math.round(cy)}px`);
+    // 把实际锚点回读到 DOM 上：端到端验证（_dragtest/cdpcheck.mjs）要靠它
+    // 断言「菜单真的贴在终点框右上角」，否则只能靠肉眼看截图。
+    // 开销是几个字符串赋值，只在菜单出现时执行。
+    menu.dataset.anchorX = Math.round(anchor.x);
+    menu.dataset.anchorY = Math.round(anchor.y);
+    menu.dataset.anchorCell = Math.round(anchor.cell);
+    menu.dataset.side = side;
+    menu.dataset.above = String(above);
   };
   place();
   // 点阵字体 swap 进来后高度会变，再量一次
@@ -1048,8 +1056,15 @@ function renderSelection() {
         commands += `<button data-command="cancel">${destination || targetId ? "取消预选" : "取消选择"}</button>`;
     }
     panel.innerHTML = `<div class="selection-top"><div><span class="eyebrow">${esc(names[unit.owner])} / UNIT ${esc(unit.id)}</span><h2>${esc(definition.name)}</h2></div><span class="hp-badge">${unit.hp}<small>兵力 / 10</small></span></div><div class="selection-content"><div class="unit-stats"><div><span>移动 / 射程</span><strong>${definition.move} / ${definition.minRange}–${definition.maxRange}</strong></div><div><span>弹药 / 燃料</span><strong>${unit.ammo === null || unit.ammo === undefined ? "∞" : unit.ammo} / ${Math.floor(unit.fuel || 0)}</strong></div><div><span>地形防御</span><strong>${TERRAINS[tile.type]?.defense || 0} ★</strong></div></div>${combat}<p>${can ? (targetId ? "确认后结算伤害与反击。" : destination ? "目的地已预选。再点一次目的地即可移动，或点红色目标攻击。" : "按住部队拖出红色箭头选路线，或点击青色格预选移动。") : unit.acted ? "该部队已行动，下个己方回合恢复。" : unit.owner !== session.seat ? "观察敌我部署，利用射程与地形安排推进。" : "等待己方回合后可下达指令。"}</p>${["city", "factory", "hq"].includes(tile.type) ? `<p>据点：${tile.owner === null ? "中立" : esc(names[tile.owner])} · 剩余占领值 ${tile.capture ?? 20}</p>` : ""}<div class="command-list">${commands}</div></div>`;
-    // ★ F5：命令菜单贴单位弹出 + 底部说明栏给默认文案
-    menuAnchor = { x: pos.x, y: pos.y };
+    // ★ F5：命令菜单跟随**选定的终点格**弹出 + 底部说明栏给默认文案
+    //
+    // 锚点必须是终点、不是部队：菜单这时还没出现（要先落点确认），
+    // 玩家刚点的就是终点框，注意力在那儿。锚在部队身上菜单会停在起点，
+    // 与终点隔开大半屏，视线要来回跳——用户原话是「跟随会不会？」。
+    // 没有预选落点（原地待机）时 destination 就是部队脚下那格，行为一致。
+    menuAnchor = destination
+      ? { x: destination.x, y: destination.y }
+      : { x: pos.x, y: pos.y };
     wireCommandDescriptions(panel);
     setCommandBar(
       can

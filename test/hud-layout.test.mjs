@@ -5,19 +5,21 @@ import {
   TOPBAR_H,
   COMMAND_BAR_H,
   EDGE_GAP,
-  UNIT_SHELF_H,
+  MIN_GAP,
+  MAX_GAP,
 } from "../public/shared/hud-layout.mjs";
 
 // 一组典型参数：1440×900 下，两行中文按钮的命令菜单量出来约 176×104。
 const VW = 1440,
   VH = 900,
   MENU_W = 176,
-  MENU_H = 104;
-const box = (p, w = MENU_W) => ({
+  MENU_H = 104,
+  CELL = 40;
+const box = (p, w = MENU_W, h = MENU_H) => ({
   left: p.cx - w / 2,
   right: p.cx + w / 2,
-  top: p.cy - MENU_H / 2,
-  bottom: p.cy + MENU_H / 2,
+  top: p.cy - h / 2,
+  bottom: p.cy + h / 2,
 });
 const place = (anchorX, anchorY, over = {}) =>
   commandMenuPosition({
@@ -27,130 +29,169 @@ const place = (anchorX, anchorY, over = {}) =>
     menuH: MENU_H,
     vw: VW,
     vh: VH,
+    cell: CELL,
     ...over,
   });
+const tile = (ax, ay, cell = CELL) => ({
+  left: ax - cell / 2,
+  right: ax + cell / 2,
+  top: ay - cell / 2,
+  bottom: ay + cell / 2,
+});
 const overlaps = (a, b) =>
   a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 
-test("单位在左半屏 → 菜单贴左边缘", () => {
-  for (const ax of [40, 120, 300]) {
-    const p = place(ax, 400);
-    assert.equal(p.onLeft, true);
-    assert.equal(box(p).left, EDGE_GAP);
+// ── 核心语义：跟随终点格，贴它的右上角 ────────────────────────────────
+
+test("菜单贴在终点格的右上角（整体在格的上方、格的右侧）", () => {
+  for (const [ax, ay] of [
+    [300, 400],
+    [420, 500],
+    [600, 300],
+  ]) {
+    const p = place(ax, ay);
+    const b = box(p);
+    assert.equal(p.side, "right", `(${ax},${ay}) 应向右展开`);
+    assert.equal(p.above, true, `(${ax},${ay}) 应向上展开`);
+    assert.ok(
+      b.left >= ax + CELL / 2,
+      `菜单未在格右侧：left=${b.left} 格右=${ax + CELL / 2}`,
+    );
+    assert.ok(
+      b.bottom <= ay - CELL / 2,
+      `菜单未在格上方：bottom=${b.bottom} 格上=${ay - CELL / 2}`,
+    );
   }
 });
 
-test("单位在右半屏 → 菜单贴右边缘", () => {
-  for (const ax of [900, 1100, 1390]) {
-    const p = place(ax, 400);
-    assert.equal(p.onLeft, false);
-    assert.equal(box(p).right, VW - EDGE_GAP);
-  }
-});
-
-test("两个半屏的分界按中心判定，边界值不翻面", () => {
-  assert.equal(place(VW / 2 - 1, 400).onLeft, true);
-  assert.equal(place(VW / 2, 400).onLeft, false);
-});
-
-// ★ 本轮返工的核心约束：菜单不能压住单位所在格。
-//   移动范围从单位四周展开，压住单位格 = 玩家点不到自己脚下那格。
-//   注意实现方式：**靠垂直错开**，不是把菜单甩到屏幕对面。
-test("菜单矩形与单位格不相交", () => {
-  for (const ax of [40, 120, 300, 700, 1100, 1390]) {
-    for (const ay of [200, 450, 700]) {
+// ★ 用户的原始诉求：菜单不许压住终点框——他得看清、点得到自己选的落点。
+test("菜单矩形与终点格永不相交", () => {
+  for (const ax of [40, 151, 300, 720, 1100, 1380]) {
+    for (const ay of [120, 260, 450, 660, 820]) {
       const b = box(place(ax, ay));
-      const unit = { left: ax - 20, right: ax + 20, top: ay - 20, bottom: ay + 20 };
       assert.equal(
-        overlaps(b, unit),
+        overlaps(b, tile(ax, ay)),
         false,
-        `单位(${ax},${ay}) 被盖住：菜单 [${b.left},${b.top},${b.right},${b.bottom}]`,
+        `终点格(${ax},${ay}) 被盖住：菜单 [${b.left},${b.top},${b.right},${b.bottom}]`,
       );
     }
   }
 });
 
-// ★ 这条钉住「不许翻面」：曾经的做法是一旦压住单位就翻到对面，
-//   结果单位在左侧时菜单跑到屏幕最右（实测 cx 从 100 变 1218），
-//   鼠标要横穿整屏 —— 比压住还难用。
-test("贴边时也不翻到屏幕对面", () => {
-  const left = place(40, 400);
-  assert.equal(left.onLeft, true, "单位在左，菜单必须留在左侧");
-  assert.equal(box(left).left, EDGE_GAP);
-
-  const right = place(1390, 400);
-  assert.equal(right.onLeft, false, "单位在右，菜单必须留在右侧");
-  assert.equal(box(right).right, VW - EDGE_GAP);
+test("菜单与终点格之间留有缝，且在 8–16 之间", () => {
+  const mid = place(300, 400);
+  const mb = box(mid);
+  const gap = Math.min(mb.left - (300 + CELL / 2), 400 - CELL / 2 - mb.bottom);
+  assert.ok(gap >= MIN_GAP && gap <= MAX_GAP, `缝异常：${gap}`);
+  // cover 放大后格宽 101px，缝应随格走并封顶在 16
+  const big = box(place(352, 500, { cell: 101 }));
+  assert.ok(big.left - (352 + 50.5) <= MAX_GAP + 0.001);
+  assert.ok(big.left - (352 + 50.5) >= MIN_GAP);
 });
 
-test("垂直错开优先往下，下方放不下才往上", () => {
-  // 中段：下方有空间 → 推向单位格之下
-  const mid = place(40, 400);
-  assert.ok(box(mid).top >= 400 + 20, `没往下错开：top=${box(mid).top}`);
-  // 贴近底部且贴左：下方被说明栏+单位栏占满 → 往上错开
-  const low = place(40, 760);
-  assert.ok(box(low).bottom <= 760 - 20, `没往上错开：bottom=${box(low).bottom}`);
+// ── 翻边规则：都是视口逼的，不是偏好 ────────────────────────────────
+
+test("终点格靠右、右侧装不下 → 翻到左上角，向左展开", () => {
+  const p = place(1380, 400);
+  const b = box(p);
+  assert.equal(p.side, "left");
+  assert.ok(b.right <= 1380 - CELL / 2, `翻面后仍压格：right=${b.right}`);
+  assert.ok(b.left >= 0);
 });
+
+test("终点格靠顶、上方装不下 → 翻到右下角，向下展开", () => {
+  const p = place(300, 56);
+  const b = box(p);
+  assert.equal(p.above, false);
+  assert.ok(b.top >= 56 + CELL / 2, `翻面后仍压格：top=${b.top}`);
+  assert.ok(b.top >= TOPBAR_H, `顶穿顶栏：${b.top}`);
+});
+
+test("翻面绝不发生「甩到屏幕另一头」——菜单始终与终点格相邻", () => {
+  // 曾经的错解：压住单位就翻到对面，cx 从 100 跳到 1218，鼠标横穿整屏。
+  for (const ax of [20, 40, 120, 1380, 1420]) {
+    for (const ay of [60, 400, 860]) {
+      const p = place(ax, ay);
+      assert.ok(
+        Math.abs(p.cx - ax) <= VW * 0.5 + MENU_W,
+        `(${ax},${ay}) 菜单甩太远：cx=${p.cx}`,
+      );
+    }
+  }
+});
+
+// ── 边界与退化 ──────────────────────────────────────────────────────
 
 test("菜单始终完整落在顶栏与说明栏之间", () => {
-  for (const ay of [0, 60, 450, 860, 1000]) {
+  for (const ay of [0, 40, 56, 300, 700, 880, 1000]) {
     const b = box(place(300, ay));
     assert.ok(b.top >= TOPBAR_H, `顶部落到 ${b.top}`);
     assert.ok(b.bottom <= VH - COMMAND_BAR_H, `底部落到 ${b.bottom}`);
   }
 });
 
-test("贴左时避开左下角单位栏，贴右时不需要", () => {
-  const left = box(place(40, 900));
-  assert.ok(
-    left.bottom <= VH - COMMAND_BAR_H - UNIT_SHELF_H,
-    `未让位，落在 ${left.bottom}`,
-  );
-  const right = box(place(1390, 900));
-  assert.ok(right.bottom > left.bottom);
-});
-
-test("垂直方向跟住单位，但不越界", () => {
-  const mid = place(300, 400);
-  assert.equal(mid.cy, 400);
-  assert.ok(box(place(300, 60)).top >= TOPBAR_H);
-  assert.ok(box(place(300, 880)).bottom <= VH - COMMAND_BAR_H - UNIT_SHELF_H);
-});
-
-test("视口过矮时退化为取中点，不产生 NaN", () => {
-  const p = place(300, 400, { vh: 200 });
-  assert.ok(Number.isFinite(p.cx) && Number.isFinite(p.cy));
-  assert.ok(Number.isFinite(box(p).top));
-});
-
-test("宽菜单下不压单位，且完整落在视口内", () => {
-  for (const ax of [300, 1100]) {
-    const p = place(ax, 400, { menuW: 400 });
-    const b = box(p, 400);
-    assert.ok(b.left >= 0 && b.right <= VW, `越界：[${b.left}, ${b.right}]`);
-    const unit = { left: ax - 20, right: ax + 20, top: 400 - 20, bottom: 400 + 20 };
-    assert.equal(overlaps(b, unit), false, `单位 x=${ax} 被宽菜单盖住`);
+test("菜单始终完整落在左右视口内", () => {
+  for (const ax of [0, 20, 200, 720, 1200, 1420, 1440]) {
+    const b = box(place(ax, 420));
+    assert.ok(b.left >= 0, `左边越界 ${b.left}`);
+    assert.ok(b.right <= VW, `右边越界 ${b.right}`);
   }
 });
 
-test("真实格宽（cover 放大到 101px）下仍然不压单位", () => {
-  // 实测：1440×900 视口用 cover 铺满 15×11 的地图时，一格约 101px，
-  // 比逻辑值 40 大一倍多 —— 那时的重叠判定必须用真实 cell。
+test("垂直方向跟随终点格高度（未触顶/触底时严格线性）", () => {
+  for (const ay of [250, 400, 550, 700]) {
+    assert.equal(box(place(300, ay)).bottom, ay - CELL / 2 - MIN_GAP);
+  }
+});
+
+test("视口过矮 / 过窄时退化为夹紧，不产生 NaN", () => {
+  for (const over of [{ vh: 120 }, { vw: 120 }, { vw: 200, vh: 160 }]) {
+    const p = place(300, 400, over);
+    const b = box(p);
+    for (const v of [p.cx, p.cy, b.left, b.top, b.right, b.bottom])
+      assert.ok(Number.isFinite(v), `${JSON.stringify(over)} 产生非有限值`);
+  }
+});
+
+test("宽菜单（400px）下不压终点格，且落在视口内", () => {
+  for (const ax of [300, 1000]) {
+    const p = place(ax, 400, { menuW: 400 });
+    const b = box(p, 400);
+    assert.ok(b.left >= 0 && b.right <= VW, `越界 [${b.left}, ${b.right}]`);
+    assert.equal(overlaps(b, tile(ax, 400)), false, `x=${ax} 被宽菜单盖住`);
+  }
+});
+
+test("真实格宽（cover 放大到 101px）下仍然不压终点格", () => {
+  // 实测：1440×900 视口用 cover 铺满 15×11 的地图时，一格约 101px。
   const cell = 101;
-  const unitHalf = cell / 2;
   for (const ax of [151, 352, 1200]) {
     for (const ay of [151, 352, 600]) {
       const p = place(ax, ay, { cell });
       const b = box(p);
-      const unit = {
-        left: ax - unitHalf, right: ax + unitHalf,
-        top: ay - unitHalf, bottom: ay + unitHalf,
-      };
       assert.equal(
-        overlaps(b, unit),
+        overlaps(b, tile(ax, ay, cell)),
         false,
-        `cell=${cell} 单位(${ax},${ay}) 被盖住：菜单 [${b.left},${b.top},${b.right},${b.bottom}]`,
+        `cell=${cell} 终点格(${ax},${ay}) 被盖住：菜单 [${b.left},${b.top},${b.right},${b.bottom}]`,
       );
     }
   }
+});
+
+test("cell 缺省时按 40 处理，不炸", () => {
+  const p = commandMenuPosition({
+    anchorX: 400,
+    anchorY: 400,
+    menuW: MENU_W,
+    menuH: MENU_H,
+    vw: VW,
+    vh: VH,
+  });
+  assert.equal(overlaps(box(p), tile(400, 400)), false);
+  assert.equal(p.side, "right");
+});
+
+test("EDGE_GAP 只在夹紧时生效，不参与贴格定位", () => {
+  const p = place(300, 400);
+  assert.ok(box(p).left > EDGE_GAP, "贴格定位时不该被 EDGE_GAP 拉走");
 });
