@@ -1879,3 +1879,213 @@ dialog::backdrop {
     animation: none !important;
   }
 }
+
+/* ==========================================================================
+   F2 · 战场化改造（2026-09-30）
+   --------------------------------------------------------------------------
+   依据：`../参考资产-结构分析.md`（高级战争 UI 结构分析）
+   目标：消灭「PPT 感」——让**战场即屏幕**，信息浮在战场上，而不是并排的文档。
+
+   做法：本段**只覆盖、不删除**上面的 F1 规则。
+        好处是回退只需删掉这一整段；也可以随时对照两版。
+   边界：不碰 canvas 的命中算法。`eventTile()` 运行时读 getComputedStyle，
+         所以这里改 object-fit / padding / border 会自动被命中测试跟上。
+   ========================================================================== */
+
+/* ---- 1. 战场铺满：去掉 grid 分栏、去掉留白与舞台灯 --------------------- */
+
+.battle {
+  /* 从"页面里的一块内容"变成"一整屏战场" */
+  padding: 0 0 0;
+  max-width: none;
+}
+
+/* 头部压成单行浮层（参考 §2.6：高级战争的顶栏只有约 70px；我们原先约 120px） */
+.battle-header {
+  position: relative;
+  z-index: 20;
+  height: 56px;
+  margin: 0;
+  padding: 0 14px;
+  gap: 16px;
+  background: rgba(16, 26, 30, 0.88);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.mission-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.mission-title .eyebrow {
+  display: none;              /* 眼睛不需要看到 "OPERATION / 正在作战" */
+}
+.mission-title h1 {
+  font-size: 15px;
+  margin: 0;
+  letter-spacing: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.battle-turn {
+  margin-left: 0;
+  margin-right: auto;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  padding-left: 14px;
+  gap: 8px;
+}
+.battle-turn > span {
+  font: 700 9px ui-monospace, monospace;
+  letter-spacing: 0.2em;
+}
+.battle-turn strong {
+  font: 600 26px ui-monospace, monospace;
+  letter-spacing: -1px;
+}
+.battle-turn > div {
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+.battle-turn > div > span {
+  font-size: 11px;
+}
+.battle-turn small {
+  font-size: 9px;
+  margin-top: 2px;
+}
+.battle-tools .button {
+  padding: 6px 10px;
+  font-size: 10px;
+}
+
+/* 战场主体：铺满，浮动层挂上去 */
+.battle-layout {
+  display: block;             /* 关键：从 grid 改为普通流 */
+  position: relative;
+  height: calc(100vh - 56px - 30px);   /* 减去头部与页脚 */
+  overflow: hidden;
+}
+
+.battlefield-panel {
+  position: absolute;
+  inset: 0;
+  background: none;           /* 去掉 #111d20 实心底 */
+  border: 0;                  /* 去掉边框 */
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* 工具条：贴顶的极窄浮条 */
+.battlefield-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding: 6px 14px;
+  font-size: 10px;
+  background: linear-gradient(to bottom, rgba(12, 20, 24, 0.82), transparent);
+  pointer-events: none;       /* 不挡地图点击 */
+}
+
+/* ---- 2. 核心一刀：删掉 20px 留白、舞台灯、投影、硬砍高度 --------------- */
+
+.battle-canvas-wrap {
+  padding: 0;                 /* ← 删掉 20px 留白 */
+  background: #0d1a17;        /* ← 删掉 radial-gradient 舞台灯，改深绿融进草地 */
+  height: 100%;
+  width: 100%;
+}
+
+.battle-canvas-wrap canvas {
+  box-shadow: none;           /* ← 删掉「像一张纸浮起来」的投影 */
+  max-height: none;           /* ← 删掉 calc(100vh - 390px) 硬砍 */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;        /* 保比例，多出的地方由上面的深绿填空 */
+}
+
+/* ---- 3. 信息浮层化：侧栏不再与地图并排，改成悬在战场上的玻璃 ------- */
+
+.command-sidebar {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;               /* Q1 取「右下角浮层」（接近高级战争） */
+  top: auto;
+  z-index: 15;
+  width: 268px;
+  max-height: calc(100% - 28px);
+  overflow-y: auto;
+  gap: 8px;
+  padding: 0;
+}
+/* 浮层内的每张卡片都换成半透明玻璃 */
+.command-sidebar .panel {
+  background: rgba(14, 24, 28, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.commander-panel {
+  padding: 12px;
+}
+.selection-panel {
+  min-height: 0;
+}
+.end-turn-area {
+  margin: 0;
+}
+
+/* 战况电台：默认收起成一行，避免长期占着战场右下角 */
+.log-panel ol {
+  max-height: 78px;
+}
+
+/* 底部图例与玩家条：贴底浮条 */
+.map-legend {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 10;
+  border-top: 0;
+  padding: 6px 14px 30px;
+  background: linear-gradient(to top, rgba(12, 20, 24, 0.85), transparent);
+  font-size: 9px;
+  pointer-events: none;
+}
+.player-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 11;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(14, 24, 28, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* ---- 4. 字体阶梯：只留 8 / 11 / 18 三档，行高恒等于字号 -------------- */
+
+.battle-turn strong,
+.funds strong,
+.hp-badge,
+.unit-stats strong,
+#energy-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* ---- 5. 页脚压缩（战场要多出这一行的高度） --------------------------- */
+
+.app-footer {
+  padding: 6px 14px;
+  font-size: 8px;
+}

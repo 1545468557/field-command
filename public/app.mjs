@@ -358,6 +358,25 @@ function validTargets(unit) {
     return [];
   }
 }
+/**
+ * 伤害预测浮标（参考资产 §2.4）。
+ *
+ * 只在「已预选攻击目标」时给出，浮在目标格上方。
+ * 侧栏的 `.combat-preview` 仍然保留（信息更全，含反击），
+ * 这里只是把**最关键的那个数字**搬到战场上，减少眼睛往返。
+ */
+function combatHintFor(unit) {
+  if (!unit || !targetId) return null;
+  const target = room.state.units.find((u) => u.id === targetId);
+  if (!target) return null;
+  try {
+    const p = previewCombat(room.state, unit.id, targetId, effectivePosition(unit));
+    if (!p || !Number.isFinite(p.damage)) return null;
+    return { x: target.x, y: target.y, damage: p.damage, counter: p.counter };
+  } catch {
+    return null;
+  }
+}
 function resetSelection() {
   selectedId = null;
   destination = null;
@@ -550,11 +569,15 @@ function updateScene() {
   }
   battleRenderer.setScene({
     state: room.state,
+    // 光标配色需要知道"我是谁"（renderer 里的 cursorPose 用）。
+    seat: session.seat,
     selectedId,
     reachable: ridesSurface(moves, destination, arrowPath),
     targets: validTargets(unit),
     hoverTile: selectedTile,
     preview: destination,
+    // 伤害预测浮标：浮在目标格上方（参考资产 §2.4）
+    combatHint: combatHintFor(unit),
   });
   battleRenderer.setArrowPath(
     arrowPath,

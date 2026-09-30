@@ -381,6 +381,65 @@ function paintUnit(ctx, unit, x, y, motion) {
   ctx.restore();
 }
 
+/**
+ * 伤害预测浮标 —— 战场上的小标签。
+ *
+ * ★ 2026-09-30 新增（参考资产 §2.4）。
+ * 高级战争的 `damage-forecast-pane.png` 只有 32×23，说明它**不是面板**，
+ * 而是一个**浮在目标格上方的小牌子**：顶部深色条写 `DAMAGE`，
+ * 下方亮绿大数字 `87%`，底部一个尖角指向目标格（对话气泡造型）。
+ *
+ * 采样配色：
+ *   牌头  深灰蓝（约 rgb(48,56,64)）
+ *   数字底 亮绿（约 rgb(80,255,120)）
+ *   文字  黑
+ *
+ * 我们不用百分比，用本作的 −HP 制（更符合已有数值体系）。
+ * 目标：**信息出现在战场上，而不是屏幕边上的卡片里**。
+ */
+function damageBubble(ctx, cellX, cellY, label, value, tone) {
+  const cx = cellX * TILE + TILE / 2;
+  const bubbleW = 58;
+  const bubbleH = 34;
+  // 默认浮在目标格上方一格；若会跑出画布顶部则改到下方
+  const above = cellY > 1;
+  const by = above ? cellY * TILE - bubbleH - 6 : cellY * TILE + TILE + 6;
+  const bx = Math.round(cx - bubbleW / 2);
+  // 阴影
+  box(ctx, bx + 2, by + 2, bubbleW, bubbleH, "rgba(0,0,0,.35)");
+  // 牌头（深色条）
+  box(ctx, bx, by, bubbleW, 13, "rgba(38,48,54,.96)");
+  // 牌身（亮色底）
+  box(ctx, bx, by + 13, bubbleW, bubbleH - 13, tone.body);
+  // 外描边
+  box(ctx, bx, by, bubbleW, 1, "rgba(0,0,0,.6)");
+  box(ctx, bx, by + bubbleH - 1, bubbleW, 1, "rgba(0,0,0,.6)");
+  box(ctx, bx, by, 1, bubbleH, "rgba(0,0,0,.6)");
+  box(ctx, bx + bubbleW - 1, by, 1, bubbleH, "rgba(0,0,0,.6)");
+  // 尖角（指向目标格）
+  const tipY = above ? by + bubbleH : by - 5;
+  polygon(
+    ctx,
+    [
+      [cx - 6, above ? by + bubbleH - 1 : by + 1],
+      [cx + 6, above ? by + bubbleH - 1 : by + 1],
+      [cx, above ? by + bubbleH + 5 : by - 5],
+    ],
+    tone.body,
+  );
+  // 文字（用 canvas 直接写，字号与像素风对齐）
+  ctx.save();
+  ctx.font = "700 8px ui-monospace, monospace";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(180,196,204,.95)";
+  ctx.fillText(label, bx + 5, by + 7);
+  ctx.font = "700 15px ui-monospace, monospace";
+  ctx.fillStyle = tone.text;
+  ctx.fillText(value, bx + 5, by + 23);
+  ctx.restore();
+  void tipY;
+}
+
 function corners(ctx, x, y, color, inset = 1, length = 7, thickness = 2) {
   const s = TILE - inset * 2;
   x += inset;
@@ -409,24 +468,35 @@ function corners(ctx, x, y, color, inset = 1, length = 7, thickness = 2) {
     );
   }
 }
+/**
+ * 移动/攻击范围格。
+ *
+ * ★ 2026-09-30 改（参考《高级战争》`docs/demo-reels/attack-animation.gif` 第 60 帧，见
+ *   `参考资产-结构分析.md` §2.1）：
+ *   旧实现每格画 `corners()` —— 四角描边 + 中点白点，读起来像「表格里涂色」。
+ *   高级战争的范围块**没有任何描边**，是纯粹的整块半透明色罩，像「地面打了光」。
+ *   去掉描边 + 颜色调亮，是「从 PPT 到战场」最便宜的一刀。
+ *
+ *   采样参考色（同一帧，格内约 rgb(144,216,170) 罩在草地上）：
+ *     移动 = 青绿偏黄，攻击 = 暖红。
+ */
 function rangeTile(ctx, x, y, isTarget, index) {
   const ox = x * TILE,
     oy = y * TILE;
   box(
     ctx,
-    ox + 1,
-    oy + 1,
-    38,
-    38,
-    isTarget ? "rgba(237,99,75,.30)" : "rgba(74,216,204,.23)",
+    ox,
+    oy,
+    TILE,
+    TILE,
+    isTarget ? "rgba(240,104,78,.34)" : "rgba(122,224,168,.30)",
   );
-  const c = isTarget ? "rgba(255,153,122,.9)" : "rgba(150,248,222,.62)";
-  corners(ctx, ox, oy, c, 2, isTarget ? 5 : 3, 1);
+  // 只保留「可攻击目标」的中心准星，这是功能性提示而非装饰。
   if (isTarget) {
-    box(ctx, ox + 17, oy + 4, 6, 1, "#ffd5b4");
-    box(ctx, ox + 4, oy + 17, 1, 6, "#ffd5b4");
-  } else if (index % 2 === 0)
-    box(ctx, ox + 19, oy + 19, 2, 2, "rgba(199,255,232,.36)");
+    box(ctx, ox + 17, oy + 6, 6, 2, "rgba(255,213,180,.92)");
+    box(ctx, ox + 6, oy + 17, 2, 6, "rgba(255,213,180,.92)");
+    box(ctx, ox + TILE / 2 - 1, oy + TILE / 2 - 1, 2, 2, "#ffd5b4");
+  }
 }
 
 function heading(from, to) {
@@ -553,6 +623,11 @@ export function createRenderer(
   const terrainCtx = terrainCanvas.getContext("2d", { alpha: false });
   let scene = {
     state: null,
+    // 光标配色需要知道"我是谁"（cursorPose 用）；由 app.mjs 通过 setScene 传入。
+    seat: 0,
+    // 伤害预测浮标：{ x, y, damage, counter }（参考资产 §2.4）。
+    // 由 app.mjs 在预选攻击目标时传入，绘制在目标格上方，**不进侧栏**。
+    combatHint: null,
     selectedId: null,
     reachable: [],
     targets: [],
@@ -592,6 +667,73 @@ export function createRenderer(
     // 拖拽上报去重用的「上一次光标格」。与 dragPath（渲染结果）分开，
     // 见 pressMove 里的说明。
     lastDragKey = null;
+
+  /**
+   * 光标配色 / 尺寸，按单位状态切换。
+   *
+   * ★ 2026-09-30 新增（参考资产 §2.3）。
+   * 高级战争有 4 种动画光标（`MapCursor/mapcursor{,-arrow,-wrench,-wrong}`），
+   * 尺寸 22×22（TILE=16，即约 1.4 格）。这里按状态给出等价配色：
+   *
+   *   ready  可指挥 —— 暖白（对应 mapcursor）
+   *   fight  可攻击 —— 亮红（对应 mapcursor-arrow）
+   *   spent  已行动 —— 冷灰（对应 mapcursor-wrong）
+   *   foe    敌方只读 —— 暗红（与己方区分）
+   */
+  const CURSOR_POSES = {
+    ready: { outer: "#1f3a34", inner: "#fff2c0", hot: "#fffbe8" },
+    fight: { outer: "#4a1d16", inner: "#ff9a72", hot: "#ffd3b8" },
+    spent: { outer: "#26302f", inner: "#899492", hot: "#aab4b2" },
+    foe: { outer: "#3a1f22", inner: "#e08a86", hot: "#f4c0bc" },
+  };
+  /**
+   * 判定当前该用哪种光标。这一层只做展示，不改变任何可指挥性逻辑
+   * （真正的可指挥判定仍在上层 `canCommand()` / `canCommandUnit()`）。
+   *
+   * ⚠️ 必须定义在 createRenderer 闭包内：它要读 scene.seat / scene.targets，
+   *    而 scene 是闭包内的局部变量，放在模块作用域会直接 ReferenceError。
+   */
+  function cursorPose(unit) {
+    const mine = unit.owner === scene.seat;
+    if (!mine) return CURSOR_POSES.foe;
+    if (unit.acted) return CURSOR_POSES.spent;
+    // 有可攻击目标 → 红色战斗光标
+    if ((scene.targets?.length || 0) > 0) return CURSOR_POSES.fight;
+    return CURSOR_POSES.ready;
+  }
+  /**
+   * 环形光标：单位格外的**马蹄形光环**，左右开口，不做闭合方框。
+   *
+   * 参考里的形状是「八边形/圆角环」——用逐段短横线拼出一个近似圆，
+   * 左右两侧留缺口（读起来像一对括号，而不是一个框）。
+   * 尺寸按 TILE 等比换算：参考 22px / 16px 格 ≈ 1.375 格。
+   */
+  function ringCursor(ctx2, tileX, tileY, outerColor, innerColor) {
+    const cx = tileX + TILE / 2;
+    const cy = tileY + TILE / 2;
+    const outerR = TILE * 0.66;
+    const innerR = TILE * 0.56;
+    // 用 16 段拼环；跳过最左/最右各 1 段，形成开口。
+    const SEGMENTS = 16;
+    const OPEN = [3, 4, 11, 12]; // 左右开口（0=正右，逆时针）
+    const drawRing = (radius, color, thickness) => {
+      for (let i = 0; i < SEGMENTS; i++) {
+        if (OPEN.includes(i)) continue;
+        const a0 = (i / SEGMENTS) * Math.PI * 2;
+        const a1 = ((i + 1) / SEGMENTS) * Math.PI * 2;
+        const x0 = Math.round(cx + Math.cos(a0) * radius - thickness / 2);
+        const y0 = Math.round(cy + Math.sin(a0) * radius - thickness / 2);
+        const x1 = Math.round(cx + Math.cos(a1) * radius - thickness / 2);
+        const y1 = Math.round(cy + Math.sin(a1) * radius - thickness / 2);
+        const x = Math.min(x0, x1) - 1;
+        const y = Math.min(y0, y1) - 1;
+        box(ctx2, x, y, Math.abs(x1 - x0) + thickness + 2, Math.abs(y1 - y0) + thickness + 2, color);
+      }
+    };
+    drawRing(outerR, outerColor, 3);
+    drawRing(innerR, innerColor, 2);
+  }
+
   function cancelPressTimer() {
     if (pressTimer) {
       clearTimeout(pressTimer);
@@ -844,33 +986,47 @@ export function createRenderer(
       }
     }
   }
-  // 拉拽箭头配色：己方用本作已有的红（与「可攻击目标」同色系），敌方只读用灰。
+  /**
+   * 拉拽箭头配色。
+   *
+   * ★ 2026-09-30 重做（参考 `attack-animation.gif` 第 60 帧，见 `参考资产-结构分析.md` §2.2）。
+   *
+   * 旧配色是「深色描边 + 亮色芯线」两层带描边，读起来像 UI 控件。
+   * 采样高级战争的箭头后发现做法完全不同：
+   *
+   *   主线   rgb(144,216,255)   ← 极浅的青蓝
+   *   高光   rgb(180,216,255)   ← 主线**上侧**一条更细的亮边
+   *   极亮   rgb(180,252,255)   ← 转折/端点
+   *
+   * 特征：**没有描边**、**只走直角**、线细、靠"上侧高光"制造发光感。
+   * 描边会带来控件感；无描边 + 上侧高光才像"地面上的光"。
+   */
   const ARROW_TONES = {
     own: {
-      core: "#e0523f",
-      edge: "rgba(90,22,14,.85)",
-      head: "#ffd5b4",
-      tail: "#ffe8d6",
+      core: "rgba(255,145,100,.92)",  // 主线：暖橙
+      gloss: "rgba(255,214,182,.85)", // 上侧高光
+      hot: "rgba(255,240,222,.95)",   // 起点
+      head: "rgba(255,206,168,.98)",  // 末端方块箭头
     },
     enemy: {
-      core: "rgba(148,158,156,.9)",
-      edge: "rgba(38,48,47,.8)",
-      head: "#d6dedc",
-      tail: "#e6ecea",
+      core: "rgba(176,190,196,.9)",
+      gloss: "rgba(230,238,242,.85)",
+      hot: "rgba(246,250,252,.95)",
+      head: "rgba(222,232,236,.95)",
     },
   };
   function arrowTone() {
     return ARROW_TONES[scene.arrowTone] || ARROW_TONES.own;
   }
   /**
-   * 画「移动箭头」——《高级战争》那套红色路线箭头。
+   * 画「移动箭头」——《高级战争》那套贴地路线箭头。
    * 优先用上层钉住/正在拖拽的 arrowPath；没有时退回旧的 preview 单点逻辑。
    */
   function paintPath() {
     const pinned = scene.arrowPath;
-    let points = null;
+    let cells = null;
     if (pinned && pinned.length >= 2) {
-      points = pinned.map((t) => [t.x * TILE + 20, t.y * TILE + 20]);
+      cells = pinned;
     } else {
       const preview = scene.preview;
       if (!preview || !scene.selectedId) return;
@@ -880,59 +1036,52 @@ export function createRenderer(
         (t) => t.x === preview.x && t.y === preview.y,
       );
       const raw = destination?.path || [];
-      const path = raw.length
+      cells = raw.length
         ? [{ x: unit.x, y: unit.y }, ...raw]
         : [{ x: unit.x, y: unit.y }, preview];
-      if (path.length < 2) return;
-      points = path.map((t) => [t.x * TILE + 20, t.y * TILE + 20]);
+      if (cells.length < 2) return;
     }
-    const tone = arrowTone();
-    // 先画深色描边，再压上亮色芯线 —— 保证在青色范围格上也看得清。
-    line(ctx, points, tone.edge, 7);
-    line(ctx, points, tone.core, 4);
-    // 起点圆点：单位所在位置
-    const [startX, startY] = points[0];
-    box(ctx, startX - 4, startY - 4, 8, 8, tone.edge);
-    box(ctx, startX - 3, startY - 3, 6, 6, tone.tail);
-    // 末端三角箭头，指向最后一个拐点（单格时朝右）
-    const [endX, endY] = points[points.length - 1];
-    const [prevX, prevY] = points[points.length - 2] || [endX - TILE, endY];
-    arrowHead(ctx, prevX, prevY, endX, endY, tone);
+    paintArrowCells(cells, arrowTone());
   }
-  /** 在 (toX,toY) 处画一个指向方向的三角箭头。 */
-  function arrowHead(ctx, fromX, fromY, toX, toY, tone) {
-    let dx = toX - fromX,
-      dy = toY - fromY;
-    const len = Math.hypot(dx, dy) || 1;
-    dx /= len;
-    dy /= len;
-    const size = 11,
-      spread = 7;
-    const tipX = toX + dx * size,
-      tipY = toY + dy * size;
-    const leftX = toX - dy * spread,
-      leftY = toY + dx * spread;
-    const rightX = toX + dy * spread,
-      rightY = toY - dx * spread;
-    // 描边三角（略大一圈）
-    polygon(
-      ctx,
-      [
-        [tipX + dx * 2, tipY + dy * 2],
-        [leftX - dx * 1 - dy * 2, leftY - dy * 1 + dx * 2],
-        [rightX - dx * 1 + dy * 2, rightY - dy * 1 - dx * 2],
-      ],
-      tone.edge,
-    );
-    polygon(
-      ctx,
-      [
-        [tipX, tipY],
-        [leftX, leftY],
-        [rightX, rightY],
-      ],
-      tone.head,
-    );
+  /**
+   * 按格绘制箭头：主线 + 上侧高光，无描边，只走直角。
+   *
+   * ★ 逐格绘制（参考 `MovementArrow/movement-arrow-0101.png` 的位掩码命名，见 §3）：
+   * 高级战争用 14 张图覆盖「箭头在这个格怎么拐弯」的全部情形（4 位 = 上右下左是否连接）。
+   * 我们不需要 14 张图，但**思路要抄**：按格中心相连，天然就是直角折线，
+   * 严丝合缝贴着格子走，而不是一条斜线盖上去。
+   */
+  function paintArrowCells(cells, tone) {
+    const half = TILE / 2;
+    const pts = cells.map((t) => [t.x * TILE + half, t.y * TILE + half]);
+    const coreW = Math.max(3, Math.round(TILE * 0.10));
+    const glossW = Math.max(1, Math.round(TILE * 0.045));
+    line(ctx, pts, tone.core, coreW);
+    // 上侧高光：整体上移一点，画一条更细的亮线 → 像光从上方打下来
+    const glossPts = pts.map(([x, y]) => [x, y - (coreW - glossW) / 2]);
+    line(ctx, glossPts, tone.gloss, glossW);
+    // 起点方块：标记"从这里出发"
+    const [startX, startY] = pts[0];
+    box(ctx, startX - 3, startY - 3, 6, 6, tone.hot);
+    // 末端箭头
+    const [endX, endY] = pts[pts.length - 1];
+    const [prevX, prevY] = pts[pts.length - 2] || [endX - TILE, endY];
+    arrowHeadBlock(ctx, prevX, prevY, endX, endY, tone);
+  }
+  /**
+   * 末端箭头：高级战争用的是**短粗方块箭头**，不是细长三角。
+   * 强制轴对齐（横或竖），避免斜向箭头带来的"UI 控件感"。
+   */
+  function arrowHeadBlock(ctx, fromX, fromY, toX, toY, tone) {
+    const horizontal = Math.abs(toX - fromX) >= Math.abs(toY - fromY);
+    const size = Math.round(TILE * 0.30);
+    if (horizontal) {
+      const forward = toX >= fromX;
+      box(ctx, toX - (forward ? 0 : size), toY - size / 2, size, size, tone.head);
+    } else {
+      const forward = toY >= fromY;
+      box(ctx, toX - size / 2, toY - (forward ? 0 : size), size, size, tone.head);
+    }
   }
   function draw(time = performance.now()) {
     if (destroyed || !scene.state || !logicalWidth) return;
@@ -961,6 +1110,15 @@ export function createRenderer(
       if (u) rangeTile(ctx, u.x, u.y, true, 0);
     }
     paintPath();
+    // 伤害预测浮标（参考资产 §2.4）——画在所有格层之上、单位之下，
+    // 这样它"浮"在战场上但不遮住单位本身。
+    if (scene.combatHint) {
+      const hint = scene.combatHint;
+      damageBubble(ctx, hint.x, hint.y, "DAMAGE", `−${hint.damage}`, {
+        body: "#5df08c",
+        text: "#0d2416",
+      });
+    }
     actionEvents = actionEvents.filter((event) => time < event.start + event.duration);
     if (combatVisual && time >= combatVisual.endAt) combatVisual = null;
     const displayUnits = combatDisplayUnits(state, combatVisual, time);
@@ -1045,26 +1203,22 @@ export function createRenderer(
     }
     const selected = scene.selectedId ? unitById.get(scene.selectedId) : null;
     if (selected) {
-      const inset = Math.floor(time / 360) % 2 ? 0 : 2;
-      corners(
+      // ★ 2026-09-30 改：方框高亮 → **环形光标**（参考资产 §2.3）。
+      //   高级战争最标志性的元素不是方框，是单位外圈那个**马蹄形光环**：
+      //   白色到浅灰的像素环、左右两侧开口、5 帧循环动画，而且**按状态换色**：
+      //     普通移动 mapcursor / 可攻击 mapcursor-arrow / 可补给 mapcursor-wrench
+      //     / 不可行动 mapcursor-wrong
+      //   我们的等价状态：可指挥=暖黄、已行动=灰、被选中的敌方=红。
+      const pose = cursorPose(selected);
+      // 呼吸动画：每 360ms 在两种半径间跳一次（对齐参考里的逐帧感，不做平滑插值）
+      const beat = Math.floor(time / 360) % 2;
+      ringCursor(
         ctx,
         selected.x * TILE,
         selected.y * TILE,
-        "#264b42",
-        inset,
-        10,
-        4,
+        pose.outer,
+        pose.inner + (beat ? 0 : 1),
       );
-      corners(
-        ctx,
-        selected.x * TILE,
-        selected.y * TILE,
-        "#fff2c0",
-        inset + 1,
-        8,
-        2,
-      );
-      box(ctx, selected.x * TILE + 17, selected.y * TILE - 1, 6, 3, "#fff2c0");
     }
     if (scene.preview)
       corners(
