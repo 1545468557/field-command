@@ -11,6 +11,13 @@ import {
 import { createRenderer, TEAM_COLORS } from "./renderer.mjs";
 import { paintCombatScene, COMBAT_TIMING, combatDuration } from "./combat-scene.mjs";
 import { commandMenuPosition } from "./shared/hud-layout.mjs";
+import {
+  HERO_FADE_OUT_MS,
+  HERO_PERIOD,
+  createHeroScenario,
+  heroFrameAt,
+  heroStateAt,
+} from "./hero-cinematic.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) =>
@@ -210,36 +217,102 @@ const heroState = createGame({
     { id: 1, name: "苍蓝军", team: 1, commander: "mechanic", controller: "ai" },
   ],
 });
+// ★ 封面「循环战争」（F5）。
+//
+// 原来封面是一张静态战场图。现在换成一段**永远演不完**的桥头攻防：
+// 红坦克强渡、双方轮流开火、装甲殉爆、蓝军反冲过桥，末尾炮火覆盖，
+// 硝烟里换一批部队重新开打。
+//
+// 为什么不用 mp4：视频文件做不到首尾无缝（会跳帧），还要占几 MB、风格也未必
+// 对得上这套像素美术。而渲染器**自带**移动补间、开火姿态、爆炸与殉爆——
+// 它比较「上一帧 state」和「这一帧 state」自己推断谁打了谁。所以我们只要
+// 按节拍推进 state，画面就自己演，且与游戏内是同一套动画代码。
+// 时间轴的算术全部在 hero-cinematic.mjs 里，并且有单测钉住（见那个文件）。
+const heroScenario = createHeroScenario(heroState);
+const heroSmoke = $("#hero-smoke");
+const heroFlash = $("#hero-flash");
+const heroLanding = $("#landing");
+
+// 起点跳过「上轮余烟淡出」那一段：首轮没有上一轮，否则一进页面先糊一脸烟。
+let heroClock = HERO_FADE_OUT_MS;
+let heroLastAt = performance.now();
+let heroSelected = null;
+let heroSignature = "";
+let heroFrame = heroFrameAt(heroScenario, 0);
+
+/** 把剧本的一帧推进渲染器；状态没变就什么都不做。 */
+function paintHero() {
+  const t = heroClock % HERO_PERIOD;
+  const cycle = Math.floor(heroClock / HERO_PERIOD);
+  const frame = heroFrameAt(heroScenario, t);
+  heroFrame = frame;
+
+  // 只有「看得见的东西变了」才重新提交场景。硝烟与闪光走 CSS 层，
+  // 每帧直接改 opacity，不参与这里的判重。
+  const signature =
+    frame.units
+      .map((u) => `${u.id}:${u.x},${u.y},${u.hp},${u.acted ? 1 : 0}`)
+      .join("|") + `#${heroSelected ?? "-"}`;
+  if (signature !== heroSignature) {
+    heroSignature = signature;
+    const { state } = heroStateAt(heroScenario, t, cycle, frame);
+    heroRenderer.setScene({
+      state,
+      selectedId: heroSelected,
+      reachable: [],
+      targets: [],
+      hoverTile: null,
+      preview: null,
+    });
+  }
+
+  if (heroSmoke) heroSmoke.style.opacity = frame.overlay.smoke.toFixed(3);
+  if (heroFlash) heroFlash.style.opacity = frame.overlay.flash.toFixed(3);
+}
+
+function heroTick(now) {
+  // 夹住单帧步长：标签页被挂起后引擎会一次性补上巨大的 delta，
+  // 不夹住的话回到页面会看到战场「快进」一大段。
+  const delta = Math.min(64, Math.max(0, now - heroLastAt));
+  heroLastAt = now;
+  // 只在主菜单可见时推进——进了对局就别再空转占 CPU。
+  if (!heroLanding?.classList.contains("hidden")) {
+    heroClock += delta;
+    paintHero();
+  }
+  requestAnimationFrame(heroTick);
+}
+
 const heroRenderer = createRenderer($("#hero-canvas"), {
   onTile(x, y) {
-    const tile = tileAt(heroState, x, y),
-      unit = heroState.units.find((u) => u.x === x && u.y === y);
+    const tile = tileAt(heroState, x, y);
+    // 单位的位置每帧都在变，所以要从**当前这一帧**里找，而不是初始布阵，
+    // 否则点到的和看到的对不上。
+    const unit = (heroFrame?.units || heroState.units).find(
+      (u) => u.x === x && u.y === y,
+    );
+    heroSelected = unit?.id || null;
+    heroSignature = ""; // 逼下一帧重新提交，选中高亮立刻出现
     $("#hero-detail-title").textContent = unit
       ? `${UNITS[unit.type].name} · ${names[unit.owner]}`
       : TERRAINS[tile.type]?.name || tile.type;
     $("#hero-detail-text").textContent = unit
-      ? `移动 ${UNITS[unit.type].move} 格 · 射程 ${UNITS[unit.type].minRange}–${UNITS[unit.type].maxRange} · 点击「单人演习」开始`
+      ? `兵力 ${unit.hp}/10 · 移动 ${UNITS[unit.type].move} 格 · 射程 ${UNITS[unit.type].minRange}–${UNITS[unit.type].maxRange} · 点击「单人演习」开始`
       : `地形防御 ${TERRAINS[tile.type]?.defense || 0} ★ · 善用地形保护部队`;
-    heroRenderer.setScene({
-      state: heroState,
-      selectedId: unit?.id || null,
-      reachable: [],
-      targets: [],
-      hoverTile: { x, y },
-      preview: null,
-    });
     beep();
   },
   onHover() {},
 });
-heroRenderer.setScene({
-  state: heroState,
-  selectedId: null,
-  reachable: [],
-  targets: [],
-  hoverTile: null,
-  preview: null,
-});
+paintHero();
+requestAnimationFrame(heroTick);
+// 只读探针：给 _dragtest/herotake.mjs 用。截图必须按**剧本时刻**对齐，
+// 盲抓只能靠墙钟猜——「开火那一瞬」这种只有 260ms 的窗口根本抓不住。
+// toScreen 用来核对「CSS 镜头推近之后，点到的格与看到的格是否还是同一个」。
+window.__hero = {
+  clock: () => heroClock,
+  frame: () => heroFrame,
+  toScreen: (x, y) => heroRenderer.tileToScreen(x, y),
+};
 $("#hero-map-name").textContent = getMap("river").name;
 const combatStage = $("#combat-stage");
 const combatScene = $("#combat-scene");

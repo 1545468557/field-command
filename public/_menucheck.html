@@ -89,7 +89,12 @@
             <span class="coordinates">SECTOR 07 / 32° N</span>
           </div>
           <div class="hero-canvas-wrap">
-            <canvas id="hero-canvas" aria-label="原创像素战场预览"></canvas>
+            <canvas id="hero-canvas" aria-label="循环战争影像"></canvas>
+            <div class="hero-cinematic" aria-hidden="true">
+              <div id="hero-flash"></div>
+              <div id="hero-smoke"></div>
+              <div class="hero-scan"></div>
+            </div>
             <div class="hero-map-corner top-left"></div>
             <div class="hero-map-corner bottom-right"></div>
           </div>
@@ -327,7 +332,7 @@
   <script type="module">
 // 端到端验证「命令菜单什么时候出现」——走真实 app.mjs + 真实服务器。
 //   ?stage=select → 点一次部队        期望：选中，但**没有**命令菜单
-//   ?stage=move   → 再点同一格确认落点 期望：菜单出现，且贴屏幕边缘
+//   ?stage=move   → 再点同一格确认落点 期望：菜单出现，且贴在终点格右上角
 // 「同一格点两次」是刻意的：第一次=选中（不设落点），第二次=把该格确认为
 // 落点（部队自身所在格一定在 reachable 里）。正好对应要区分的两个状态。
 const stage = new URLSearchParams(location.search).get("stage") || "select";
