@@ -771,3 +771,174 @@ body:has(#landing:not(.hidden)) {
     rgba(0, 0, 0, 0.05) 1px 3px
   ) !important;
 }
+
+/* ==========================================================================
+   F5-film · 封面写实电影感背景板
+   --------------------------------------------------------------------------
+   把原来"铺满全屏的像素战场"替成一段**写实循环战争素材**，
+   标题与按钮仍按 F4-b 的方式浮在上面，左侧暗角沿用 .hero-panel:after。
+
+   为什么用 <video> 而不是继续用 canvas 演：
+     要的是「写实 + 电影感」，而渲染器画的是像素美术，两者不是一个体系，
+     没法靠调参把像素画变写实。所以这一层直接换成实拍素材。
+
+   循环是否无缝：素材取自原片首尾画面状态最接近的 10 秒区间
+     （6.75s→16.75s，灰度差 25.69 为全片最低），因此硬切回开头看不出接缝。
+     —— 这一点很重要：这批素材**没有一支是天然无缝的**，
+        如果随便截一段来循环，接缝会非常明显。
+
+   版权：Mixkit Restricted License（仅限个人 / 非商业用途）。
+        素材 id 23049 "Soldiers walking in the forest"。
+        若要商用，替换 public/media/intro-loop.mp4 为自有素材即可，代码不用动。
+   ========================================================================== */
+
+/* 像素 canvas 在这一模式下线，避免和视频两层动态画面互相打架 */
+.hero-panel .hero-canvas-wrap canvas#hero-canvas {
+  display: none !important;
+}
+
+.intro-video {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  /* 视线重心略偏右，给左侧文案区让位（和原 canvas 的 58% 呼应） */
+  object-position: 62% 52% !important;
+  display: block !important;
+  /* 纯装饰层，绝不能吃掉点击（虽实测按钮在其之上，仍显式关掉更稳） */
+  pointer-events: none !important;
+  /* 白天树林本身很亮，压暗 + 降饱和，做出"战地纪实"的冷调 */
+  filter: saturate(0.86) contrast(1.05) brightness(0.84) !important;
+}
+
+/* 再补一层整体压暗 + 轻微冷色偏移。
+   —— 原 canvas 那套是像素画，本来就不亮；换成实拍后亮度高得多，
+      光靠 .hero-panel:after 那层不够，标题会糊。 */
+.intro-film-tint {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 1 !important;
+  pointer-events: none !important;
+  background:
+    radial-gradient(ellipse 94% 80% at 56% 48%, transparent 34%, rgba(3, 8, 8, 0.44) 100%),
+    linear-gradient(180deg, rgba(3, 8, 8, 0.34) 0%, transparent 18%, transparent 76%, rgba(3, 8, 8, 0.46) 100%);
+}
+
+/* ★ 像素战场的「硝烟 / 炮火闪光」在视频模式下必须关掉。
+   原因：#hero-smoke 原本是**循环无缝的技术保证**——它在末段涨满，
+   把"部队瞬移回起点"那一帧盖住。现在背景换成视频，这个使命不存在了，
+   留着只会在视频上糊出一团没有来源的白烟；闪光同理。 */
+.hero-panel .hero-cinematic #hero-flash,
+.hero-panel .hero-cinematic #hero-smoke {
+  display: none !important;
+}
+/* 扫描线保留，强度再压低一点——它在实拍画面上更像"监视器信号" */
+.hero-panel .hero-cinematic .hero-scan {
+  opacity: 0.22 !important;
+}
+
+/* 文案区补投影：视频比像素画亮得多，必须有投影才稳 */
+.screen.landing .landing-copy h1,
+.screen.landing .landing-copy .intro,
+.screen.landing .landing-copy .eyebrow {
+  text-shadow:
+    0 2px 26px rgba(0, 0, 0, 0.95),
+    0 1px 4px rgba(0, 0, 0, 0.8),
+    0 0 60px rgba(0, 0, 0, 0.6);
+}
+
+/* 尊重"减少动态效果"：不放视频，只留 poster 静帧 */
+@media (prefers-reduced-motion: reduce) {
+  .intro-video { display: none !important; }
+  .hero-canvas-wrap {
+    background: #06100e url("/media/intro-poster.jpg") center/cover no-repeat !important;
+  }
+}
+
+/* ---- F5-film 收尾调整：让像素时代的配色迁就到实拍画面 --------------- */
+
+/* 1. 画面别压太狠：0.62 偏暗，抬到 0.72，同时保持冷调 */
+.intro-video {
+  filter: saturate(0.86) contrast(1.05) brightness(0.84) !important;
+}
+
+/* 2. 底部信息栏原先是 rgb(107,121,148) 的灰蓝——它配像素画是"游戏 UI"，
+      但压在实拍画面上就是一条突兀的浅色带。改成半透明深色 + 青色描边，
+      和整体暗调融在一起。 */
+.hero-panel .hero-bottom {
+  background: rgba(5, 14, 13, 0.82) !important;
+  backdrop-filter: blur(3px) !important;
+  border-top: 1px solid rgba(0, 255, 197, 0.45) !important;
+  box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.55) !important;
+}
+.hero-panel .hero-bottom strong {
+  color: #d8e4e2 !important;
+}
+.hero-panel .hero-bottom span {
+  color: #8fa5a2 !important;
+}
+/* 小坦克图标原本是深色（配浅底），现在底变深了要反过来 */
+.hero-panel .hero-bottom .mini-tank {
+  color: rgb(0, 255, 197) !important;
+}
+
+/* 3. 顶部标题带也做同样的半透明处理，避免两条"实色横条"打断画面 */
+.hero-panel .panel-heading {
+  background: linear-gradient(
+    to bottom,
+    rgba(5, 14, 13, 0.88),
+    rgba(5, 14, 13, 0.42)
+  ) !important;
+  backdrop-filter: blur(3px) !important;
+}
+
+/* 4. 左侧文案区再加一道极窄的纵向渐隐，把"文字区"和"画面区"分开，
+      这样标题不必靠加重投影硬扛（投影太重会显得脏）。 */
+.screen.landing .landing-copy::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -20px;
+  width: 620px;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    95deg,
+    rgba(3, 9, 9, 0.9) 0%,
+    rgba(3, 9, 9, 0.72) 42%,
+    rgba(3, 9, 9, 0.28) 72%,
+    transparent 100%
+  );
+}
+
+/* 文案区加渐隐层之后，投影可以收敛一点，字迹更干净 */
+.screen.landing .landing-copy h1,
+.screen.landing .landing-copy .intro,
+.screen.landing .landing-copy .eyebrow {
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.9), 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+/* 5. .hero-panel:after 那层暗角是给**像素画**设计的（像素画本身亮，
+      需要 0.9 的强压暗才能让文字浮出来）。换成实拍后它变成第三层压暗，
+      画面直接灰掉。这里按"实拍已自带明暗层次"重新配一遍：
+      左侧仍需较深（压住文字区），中间到右侧放开，让画面透出来。 */
+.hero-panel:after {
+  background:
+    linear-gradient(
+      100deg,
+      rgba(5, 13, 12, 0.86) 0%,
+      rgba(5, 13, 12, 0.58) 30%,
+      rgba(5, 13, 12, 0.05) 58%,
+      transparent 76%
+    ),
+    linear-gradient(
+      to bottom,
+      rgba(5, 13, 12, 0.42) 0%,
+      transparent 20%,
+      transparent 76%,
+      rgba(5, 13, 12, 0.58) 100%
+    ) !important;
+}

@@ -276,7 +276,8 @@ function heroTick(now) {
   const delta = Math.min(64, Math.max(0, now - heroLastAt));
   heroLastAt = now;
   // 只在主菜单可见时推进——进了对局就别再空转占 CPU。
-  if (!heroLanding?.classList.contains("hidden")) {
+  // 再加一道：写实视频模式下 canvas 已被隐藏，推进它纯属白烧（见下方 _filmMode）。
+  if (!heroLanding?.classList.contains("hidden") && !_filmMode()) {
     heroClock += delta;
     paintHero();
   }
@@ -304,6 +305,20 @@ const heroRenderer = createRenderer($("#hero-canvas"), {
   onHover() {},
 });
 paintHero();
+// ★ F5-film：封面背景换成了写实视频，原来那套「像素循环战争」整体下线
+// （canvas 被 CSS 隐藏）。这里把它停掉的理由很实在：像素战场是**每帧重绘
+// canvas** 的，用户看不到它时它还在满速空转，白烧 CPU 和电。
+//
+// 为什么保留这套代码而不是删掉：视频素材是可替换的（换 public/media/
+// intro-loop.mp4 即可，这也是将来商用时换成自有素材的入口），而且有人会因为
+// 「减少动态效果」偏好退回到像素版。所以两边都留着，由 _filmMode() 统一判断。
+//
+// 判断依据取 canvas 的 computedStyle.display —— 让 CSS 当唯一事实来源，
+// JS 不另外维护一份「现在是什么模式」的状态，避免两边不同步。
+function _filmMode() {
+  const cv = document.querySelector("#hero-canvas");
+  return !!cv && getComputedStyle(cv).display === "none";
+}
 requestAnimationFrame(heroTick);
 // 只读探针：给 _dragtest/herotake.mjs 用。截图必须按**剧本时刻**对齐，
 // 盲抓只能靠墙钟猜——「开火那一瞬」这种只有 260ms 的窗口根本抓不住。

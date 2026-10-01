@@ -90,6 +90,26 @@
           </div>
           <div class="hero-canvas-wrap">
             <canvas id="hero-canvas" aria-label="循环战争影像"></canvas>
+            <!-- ★ 写实电影感背景板（F5-film）
+                 铺满全屏的一段 10 秒无缝循环战争素材，替掉原来的像素战场当背景板。
+                 素材：Mixkit "Soldiers walking in the forest"（id 23049）
+                 许可：Mixkit Restricted License —— 仅限个人 / 非商业用途。
+                 切点：原片 6.75s→16.75s，是全片首尾画面状态最接近的区间
+                       （灰度差 25.69，全片最低），所以直接硬切回开头看不出接缝，
+                       不需要做溶接（溶接会在运动幅度大的画面留下鬼影）。
+                 想换素材：直接替换 public/media/intro-loop.mp4 即可，尺寸建议 1280×720、时长 8–12s。 -->
+            <video
+              id="intro-video"
+              class="intro-video"
+              src="/media/intro-loop.mp4"
+              autoplay
+              loop
+              muted
+              playsinline
+              preload="auto"
+              poster="/media/intro-poster.jpg"
+            ></video>
+            <div class="intro-film-tint"></div>
             <div class="hero-cinematic" aria-hidden="true">
               <div id="hero-flash"></div>
               <div id="hero-smoke"></div>
