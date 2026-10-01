@@ -1433,6 +1433,16 @@ dialog::backdrop {
   color: #aec3a4;
   text-align: center;
 }
+/* F6：兵种立绘（Sketchfab 高赞模型渲染图，见 media/units/CREDITS.json） */
+.build-symbol.unit-portrait {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: #141a1e;
+  flex: none;
+}
 .room-list {
   display: flex;
   flex-direction: column;

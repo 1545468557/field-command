@@ -30,16 +30,6 @@ const esc = (value) =>
   );
 const number = (value) => Number(value || 0).toLocaleString("zh-CN");
 const names = ["赤焰军", "苍蓝军", "金叶军", "紫星军"];
-const symbols = {
-  infantry: "♟",
-  mech: "♟",
-  recon: "▱",
-  tank: "▰",
-  heavy: "▰",
-  artillery: "⌁",
-  rocket: "⋰",
-  apc: "▤",
-};
 let room = null,
   session = null,
   eventSource = null,
@@ -1269,7 +1259,7 @@ function showBuild(x, y) {
     )
       .map(
         ([type, unit]) =>
-          `<button class="build-option" data-unit="${type}" ${unit.cost > funds ? "disabled" : ""}><span class="build-symbol">${symbols[type]}</span><span><strong>${esc(unit.name)}</strong><small>移动 ${unit.move} · 射程 ${unit.minRange}–${unit.maxRange} · ${esc(unit.description || "")}</small></span><span class="cost">${number(unit.cost)}</span></button>`,
+          `<button class="build-option" data-unit="${type}" ${unit.cost > funds ? "disabled" : ""}><img class="build-symbol unit-portrait" src="/media/units/${type}.webp" alt="${esc(unit.name)}" width="44" height="44" loading="lazy" /><span><strong>${esc(unit.name)}</strong><small>移动 ${unit.move} · 射程 ${unit.minRange}–${unit.maxRange} · ${esc(unit.description || "")}</small></span><span class="cost">${number(unit.cost)}</span></button>`,
       )
       .join("")}</div>`,
     "REINFORCEMENTS / 部队生产",
@@ -1606,3 +1596,95 @@ api("/api/rooms")
     setNetwork("服务未连接", true);
     toast("无法连接游戏服务，请确认启动窗口仍在运行。", true);
   });
+
+// ============================================================================
+// HW UI · 3D 倾斜与追光（2026-10-01）
+// ----------------------------------------------------------------------------
+// 起因：背景换成写实视频后，UI 还是"扁平色块"，两层质感对不上。
+// 用户要求 UI「3D 化、真实化」。材质本身由 hw-ui.css 负责（斜切面 + 厚度），
+// 这里只补一个 JS 才能做到的事：**跟随鼠标的倾斜与追光**。
+//
+// 边界（想清楚再动）：
+//   · 倾斜只给"卡片类"元素（兵种卡、地图卡）。按钮不做倾斜——点了会晕，
+//     而且按钮的"实体感"已经由 CSS 的厚度 + 按压缩进实现，不需要倾斜。
+//   · 角度封顶 ±8deg。超过 10deg 就会出现明显的透视拉伸，文字会糊。
+//   · 只在 pointermove 时改 CSS 变量，不做逐帧 rAF —— 鼠标不动就不计算。
+//   · 触屏 / 减少动态效果偏好下直接不启用。
+// ============================================================================
+(() => {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+
+  const MAX_TILT = 8; // deg，超过这个角度文字会开始糊
+
+  /** 给一个元素装上"倾斜 + 追光"。重复调用是幂等的。 */
+  function attachTilt(el) {
+    if (!el || el.dataset.hwTilt === "on") return;
+    el.dataset.hwTilt = "on";
+    el.classList.add("hw-tilt");
+
+    el.addEventListener("pointermove", (event) => {
+      const box = el.getBoundingClientRect();
+      if (!box.width || !box.height) return;
+      const px = (event.clientX - box.left) / box.width;
+      const py = (event.clientY - box.top) / box.height;
+      // 鼠标在右半边 → 卡片向右侧转（Y 轴正角度），像被"推"了一下
+      el.style.setProperty("--hw-ry", ((px - 0.5) * MAX_TILT * 2).toFixed(2) + "deg");
+      el.style.setProperty("--hw-rx", ((0.5 - py) * MAX_TILT * 2).toFixed(2) + "deg");
+      el.style.setProperty("--hw-gx", (px * 100).toFixed(1) + "%");
+      el.style.setProperty("--hw-gy", (py * 100).toFixed(1) + "%");
+      el.style.setProperty("--hw-gl", "1");
+    });
+
+    // 离开时回正。用 transition 收回去，不要瞬间弹回（会显得很跳）。
+    el.addEventListener("pointerleave", () => {
+      el.style.setProperty("--hw-rx", "0deg");
+      el.style.setProperty("--hw-ry", "0deg");
+      el.style.setProperty("--hw-gl", "0");
+    });
+  }
+
+  /** 给一个元素装上"只跟光、不倾斜"的效果（按钮用）。 */
+  function attachGlow(el) {
+    if (!el || el.dataset.hwGlow === "on") return;
+    el.dataset.hwGlow = "on";
+    el.classList.add("hw-glow");
+
+    el.addEventListener("pointermove", (event) => {
+      const box = el.getBoundingClientRect();
+      if (!box.width || !box.height) return;
+      el.style.setProperty("--hw-gx", (((event.clientX - box.left) / box.width) * 100).toFixed(1) + "%");
+      el.style.setProperty("--hw-gy", (((event.clientY - box.top) / box.height) * 100).toFixed(1) + "%");
+      el.style.setProperty("--hw-gl", "1");
+    });
+    el.addEventListener("pointerleave", () => {
+      el.style.setProperty("--hw-gl", "0");
+    });
+  }
+
+  /**
+   * 扫一遍页面，给该装效果的元素装上。
+   * 为什么要"扫描"而不是在创建时挂载：这些元素由很多条不同的渲染路径生成
+   *    （开场页是静态 HTML，战内面板是 renderBattle 每次重建的），
+   * 逐个去改每条路径既散又容易漏。用 MutationObserver 兜住"后生成的"部分。
+   */
+  function sweep() {
+    // 卡片类：倾斜 + 追光
+    for (const el of document.querySelectorAll(
+      ".hero-panel .feature-stats > div, .unit-card, .map-card, .player-card",
+    )) attachTilt(el);
+
+    // 按钮类：只跟光
+    for (const el of document.querySelectorAll(
+      ".button, .turn-button, .end-turn-button, .command-menu button, .hero-badge",
+    )) attachGlow(el);
+  }
+
+  sweep();
+
+  // 战内面板是每次 renderBattle 重建的，所以用 observer 兜住新节点。
+  // 只观察 childList（结构变化），不观察 attributes —— 否则我们改 CSS 变量
+  // 会触发自己，形成回调风暴。
+  const observer = new MutationObserver(() => sweep());
+  observer.observe(document.body, { childList: true, subtree: true });
+})();
