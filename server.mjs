@@ -46,6 +46,8 @@ const isObject = (value) =>
 const newToken = () => randomBytes(32).toString("hex");
 const knownCommander = (value) => Object.hasOwn(COMMANDERS, value);
 const knownMap = (value) => MAPS.some((map) => map.id === value);
+const mapSupportsPlayers = (mapId, playerCount) =>
+  MAPS.some((map) => map.id === mapId && map.players.includes(playerCount));
 
 function nameOf(value, fallback = "指挥官") {
   if (value !== undefined && typeof value !== "string")
@@ -61,8 +63,10 @@ function commanderOf(value = "vanguard") {
     fail(400, "未知的指挥官");
   return value;
 }
-function mapOf(value = "river") {
+function mapOf(value = "river", playerCount) {
   if (typeof value !== "string" || !knownMap(value)) fail(400, "未知的战场");
+  if (playerCount !== undefined && !mapSupportsPlayers(value, playerCount))
+    fail(400, "该地图不支持此玩家人数");
   return value;
 }
 function modeOf(value = "ffa") {
@@ -86,6 +90,8 @@ function validateRooms(rooms) {
       throw new Error("房间配置无效");
     if (!knownMap(room.mapId) || !["ffa", "teams"].includes(room.mode))
       throw new Error("房间战场配置无效");
+    if (!mapSupportsPlayers(room.mapId, room.playerCount))
+      throw new Error("房间战场不支持当前玩家人数");
     if (
       !Number.isSafeInteger(room.revision) ||
       room.revision < 1 ||
@@ -381,7 +387,7 @@ export async function createServer({
                 id,
                 hostSeat: 0,
                 phase: "lobby",
-                mapId: mapOf(body.mapId),
+                mapId: mapOf(body.mapId, playerCount),
                 mode: modeOf(body.mode),
                 playerCount,
                 state: null,
@@ -484,7 +490,8 @@ export async function createServer({
           if (operation === "configure") {
             hostOnly(room, seat);
             lobbyOnly(room);
-            if (body.mapId !== undefined) next.mapId = mapOf(body.mapId);
+            if (body.mapId !== undefined)
+              next.mapId = mapOf(body.mapId, next.playerCount);
             if (body.mode !== undefined) next.mode = modeOf(body.mode);
             if (body.slots !== undefined) {
               if (
