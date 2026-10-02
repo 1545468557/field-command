@@ -25,6 +25,16 @@ import {
   heroFrameAt,
   heroStateAt,
 } from "./hero-cinematic.mjs";
+import {
+  AVATAR_COUNT,
+  avatarSvg,
+  clearRecords,
+  loadProfile,
+  loadRecords,
+  recordMatch,
+  saveProfile,
+  statsFor,
+} from "./profile.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) =>
@@ -56,7 +66,23 @@ let selectedId = null,
   holdPreviewId = null,
   dragUnitId = null,
   dragArrowPath = null;
+/* ---------- 公网 / 内网判定（2026-10-02） ----------
+   公网部署后 location.hostname 是公网域名，此时邀请链接必须用 location.origin；
+   只有在本机 / 内网打开时，才回退到服务探测到的局域网 IP。 */
+function isLanHost(hostname) {
+  const host = String(hostname || "")
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host === "::1" || /^127\./.test(host)) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  if (host.endsWith(".local") || host.endsWith(".localhost")) return true;
+  return false;
+}
 let serviceURLs = [],
+  publicMode = false,
   previousTurn = null,
   victoryShown = null,
   soundEnabled = false,
@@ -80,7 +106,7 @@ function store(key, value) {
   }
 }
 function nickname() {
-  return loadJSON("field-command-name", "指挥官");
+  return loadJSON("field-command-name", "") || loadProfile().callsign || "指挥官";
 }
 function toast(message, error = false) {
   const el = document.createElement("div");
@@ -164,6 +190,118 @@ modal.addEventListener("close", () => {
   if (modalCleanup) modalCleanup();
   modalCleanup = null;
 });
+
+/* ---------- 个人档案与战绩（全部存本机，服务端不参与） ---------- */
+
+function paintAvatarButton() {
+  const button = $("#profile-button");
+  if (!button) return;
+  const profile = loadProfile();
+  button.innerHTML = avatarSvg(profile.avatar, 3, { className: "avatar-glyph" });
+  button.title = `${profile.callsign || nickname()} · 我的档案与战绩`;
+}
+
+function recordOf(room_, state) {
+  const me = state.players.find((player) => player.id === session.seat);
+  if (!me || state.winner === null || state.winner === undefined) return null;
+  const opponents = state.players
+    .filter((player) => player.team !== me.team)
+    .map((player) => player.name)
+    .join("、");
+  return {
+    key: `${room_.id}:${state.turn}`,
+    callsign: nickname(),
+    seat: session.seat,
+    won: me.team === state.winner,
+    mapId: room_.mapId,
+    mapName: getMap(room_.mapId).name,
+    mode: room_.mode,
+    playerCount: room_.playerCount,
+    day: state.day,
+    opponents: opponents || "—",
+  };
+}
+
+function formatRecordTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getMonth() + 1}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function profileDialog() {
+  const render = () => {
+    const profile = loadProfile();
+    const records = loadRecords();
+    const stats = statsFor(records);
+    const rows = records.slice(0, 12);
+    openModal(
+      "我的档案",
+      `<div class="profile-head"><div class="profile-avatar-large" id="profile-avatar-preview"></div><div><h4 id="profile-callsign">${esc(profile.callsign || nickname())}</h4><p>本机档案 · 不联网、不上传</p></div></div>
+      <label class="form-field" style="display:block;margin-bottom:14px"><span style="font-size:12px;opacity:.75">呼号</span><input id="profile-name-input" maxlength="18" value="${esc(profile.callsign || nickname())}" autocomplete="nickname"></label>
+      <div class="profile-avatar-grid" id="profile-avatar-grid"></div>
+      <div class="profile-stats"><div><strong>${stats.total}</strong><span>总局数</span></div><div><strong>${stats.wins}</strong><span>胜</span></div><div><strong>${stats.loses}</strong><span>负</span></div><div><strong>${stats.winRate}%</strong><span>胜率</span></div></div>
+      <p class="muted" style="font-size:12px;margin:0 0 8px">常用战场：${esc(stats.favoriteMap)}${stats.streak > 1 ? ` · 当前连胜 ${stats.streak}` : ""}${stats.bestDay ? ` · 最长作战 ${stats.bestDay} 天` : ""}</p>
+      <div class="profile-records">${
+        rows.length
+          ? `<table><thead><tr><th>时间</th><th>战场</th><th>对手</th><th>结果</th></tr></thead><tbody>${rows
+              .map(
+                (r) =>
+                  `<tr><td>${formatRecordTime(r.at)}</td><td>${esc(r.mapName || r.mapId || "—")}</td><td>${esc(r.opponents || "—")}</td><td class="${r.won ? "win" : "lose"}">${r.won ? "胜利" : "失败"}</td></tr>`,
+              )
+              .join("")}</tbody></table>`
+          : `<p class="profile-empty">还没有战绩。开一局，打完就会自动记在这里。</p>`
+      }</div>
+      <p class="profile-id">档案编号 ${esc(profile.id)}（存在本机浏览器，清除浏览器数据会丢失）</p>
+      <div class="modal-buttons"><button class="button secondary" id="profile-clear">清空战绩</button><button class="button primary" id="profile-save">保存档案 →</button></div>`,
+      "PLAYER RECORD / 个人档案",
+    );
+    $("#profile-avatar-preview").innerHTML = avatarSvg(profile.avatar, 7);
+    $("#profile-avatar-grid").innerHTML = Array.from(
+      { length: AVATAR_COUNT },
+      (_, index) =>
+        `<button type="button" data-avatar="${index}" aria-pressed="${index === profile.avatar}">${avatarSvg(index, 4)}</button>`,
+    ).join("");
+    const grid = $("#profile-avatar-grid");
+    grid.onclick = (event) => {
+      const button = event.target.closest("button[data-avatar]");
+      if (!button) return;
+      const index = Number(button.dataset.avatar);
+      saveProfile({ avatar: index });
+      for (const other of grid.querySelectorAll("button[data-avatar]"))
+        other.setAttribute("aria-pressed", String(Number(other.dataset.avatar) === index));
+      $("#profile-avatar-preview").innerHTML = avatarSvg(index, 7);
+      paintAvatarButton();
+      beep();
+    };
+    $("#profile-save").onclick = () => {
+      const callsign = $("#profile-name-input").value.trim().slice(0, 18) || "指挥官";
+      saveProfile({ callsign });
+      store("field-command-name", callsign);
+      paintAvatarButton();
+      closeModal();
+      toast(`档案已保存：${callsign}`);
+    };
+    $("#profile-clear").onclick = () => {
+      openModal(
+        "清空战绩？",
+        `<p class="modal-description">将删除本机记录的全部 ${records.length} 条战绩，此操作无法撤销。</p><div class="modal-buttons"><button class="button secondary" id="cancel-clear">保留</button><button class="button primary" id="confirm-clear">确认清空</button></div>`,
+        "CLEAR RECORDS",
+      );
+      $("#cancel-clear").onclick = closeModal;
+      $("#confirm-clear").onclick = () => {
+        clearRecords();
+        toast("战绩已清空。");
+        render();
+      };
+    };
+  };
+  render();
+}
+
+$("#profile-button").onclick = profileDialog;
+paintAvatarButton();
+
 async function api(path, data) {
   const response = await fetch(
     path,
@@ -311,7 +449,7 @@ const heroRenderer = createRenderer($("#hero-canvas"), {
       ? `${UNITS[unit.type].name} · ${names[unit.owner]}`
       : TERRAINS[tile.type]?.name || tile.type;
     $("#hero-detail-text").textContent = unit
-      ? `兵力 ${unit.hp}/10 · 移动 ${UNITS[unit.type].move} 格 · 射程 ${UNITS[unit.type].minRange}–${UNITS[unit.type].maxRange} · 点击「单人演习」开始`
+      ? `兵力 ${unit.hp}/10 · 移动 ${UNITS[unit.type].move} 格 · 射程 ${UNITS[unit.type].minRange}–${UNITS[unit.type].maxRange} · 点击「建立作战」开始`
       : `地形防御 ${TERRAINS[tile.type]?.defense || 0} ★ · 善用地形保护部队`;
     beep();
   },
@@ -910,13 +1048,16 @@ async function roomRequest(endpoint, data = {}) {
   return result;
 }
 function inviteURL() {
-  const lan = serviceURLs.find(
-    (url) =>
-      !url.includes("127.0.0.1") &&
-      !url.includes("localhost") &&
-      !url.includes("[::1]"),
-  );
-  return `${lan || location.origin}/?room=${encodeURIComponent(room.id)}`;
+  /* 只有从内网打开时才用探测到的局域网地址；公网访问一律用当前域名。 */
+  const lan = isLanHost(location.hostname)
+    ? serviceURLs.find(
+        (url) =>
+          !url.includes("127.0.0.1") &&
+          !url.includes("localhost") &&
+          !url.includes("[::1]"),
+      ) || location.origin
+    : location.origin;
+  return `${lan}/?room=${encodeURIComponent(room.id)}`;
 }
 async function copyText(text) {
   try {
@@ -925,7 +1066,9 @@ async function copyText(text) {
   } catch {
     openModal(
       "分享房间",
-      `<p class="modal-description">复制下方地址，发送给同一局域网的朋友。</p><input style="width:100%" id="manual-copy" readonly value="${esc(text)}"><p class="muted">房间码：${esc(room?.id || "")}</p>`,
+      `<p class="modal-description">${
+        publicMode ? "复制下方地址，发送给朋友。" : "复制下方地址，发送给同一局域网的朋友。"
+      }</p><input style="width:100%" id="manual-copy" readonly value="${esc(text)}"><p class="muted">房间码：${esc(room?.id || "")}</p>`,
     );
     $("#manual-copy").select();
   }
@@ -1400,6 +1543,11 @@ function showVictory(force = false) {
   const key = `${room.id}:${room.state.turn}`;
   if (victoryShown === key && !force) return;
   victoryShown = key;
+  const record = recordOf(room, room.state);
+  if (record && recordMatch(record)) {
+    paintAvatarButton();
+    toast(record.won ? "本局已记入战绩：胜利" : "本局已记入战绩：失败");
+  }
   const won = ownPlayer().team === room.state.winner,
     state = room.state,
     winners = state.players
@@ -1459,7 +1607,7 @@ function goHome() {
   victoryShown = null;
   resetSelection();
   showScreen("landing");
-  setNetwork("局域网服务就绪");
+  setNetwork("作战服务就绪");
   $("#footer-message").textContent = "保持观察，等待你的机会。";
   updateResume();
 }
@@ -1478,8 +1626,8 @@ $("#home-button").onclick = () => {
 $("#lobby-back").onclick = goHome;
 function createDialog() {
   openModal(
-    "建立作战房间",
-    `<p class="modal-description">房间创建后即可邀请朋友。其余席位默认由电脑补齐。</p><form id="create-form"><div class="form-grid"><div class="form-field"><label for="create-name">你的呼号</label><input id="create-name" maxlength="18" required value="${esc(nickname())}" autocomplete="nickname"></div><div class="form-field"><label for="create-count">作战人数</label><select id="create-count"><option value="2">2 人</option><option value="3">3 人混战</option><option value="4">4 人</option></select></div><div class="form-field"><label for="create-map-search">查找战场</label><input id="create-map-search" type="search" placeholder="名称、地形或战术" autocomplete="off"><label for="create-map">战场</label><select id="create-map" required>${mapOptions()}</select><small id="create-map-info" class="map-picker-info"></small></div><div class="form-field"><label for="create-co">指挥官</label><select id="create-co">${commanderOptions()}</select></div></div><div class="form-error" id="create-error"></div><button class="button primary large" type="submit">创建房间 <b>→</b></button></form>`,
+    "建立作战",
+    `<p class="modal-description">选好战场即可出击。空位由电脑接管，朋友可随时加入。</p><form id="create-form"><div class="form-grid"><div class="form-field"><label for="create-name">你的呼号</label><input id="create-name" maxlength="18" required value="${esc(nickname())}" autocomplete="nickname"></div><div class="form-field"><label for="create-count">作战人数</label><select id="create-count"><option value="2">2 人</option><option value="3">3 人混战</option><option value="4">4 人</option></select></div><div class="form-field"><label for="create-map-search">查找战场</label><input id="create-map-search" type="search" placeholder="名称、地形或战术" autocomplete="off"><label for="create-map">战场</label><select id="create-map" required>${mapOptions()}</select><small id="create-map-info" class="map-picker-info"></small></div><div class="form-field"><label for="create-co">指挥官</label><select id="create-co">${commanderOptions()}</select></div></div><div class="form-error" id="create-error"></div><button class="button primary large" type="submit">出击 <b>→</b></button></form>`,
     "CREATE OPERATION / 战前集结",
   );
   const mapSelect = $("#create-map");
@@ -1525,29 +1673,14 @@ function createDialog() {
   };
 }
 $("#create-room").onclick = createDialog;
-$("#quick-start").onclick = () =>
-  safe(async () => {
-    const button = $("#quick-start");
-    button.disabled = true;
-    try {
-      const result = await api("/api/rooms", {
-        name: nickname(),
-        playerCount: 2,
-        mapId: "training",
-        commander: "vanguard",
-        mode: "ffa",
-      });
-      attachSession(result);
-      await roomRequest("start");
-      toast("演习开始：点击赤焰军单位，选择移动位置，再下达命令。");
-    } finally {
-      button.disabled = false;
-    }
-  });
 function joinDialog(prefill = "") {
   openModal(
     "加入作战房间",
-    `<p class="modal-description">在房主的服务地址打开本页，输入房间码加入。两台设备需要处于同一局域网。</p><form id="join-form"><div class="form-grid"><div class="form-field"><label for="join-code">房间码</label><input id="join-code" maxlength="12" placeholder="例如 AB12CD" required value="${esc(prefill)}" style="text-transform:uppercase" autocomplete="off"></div><div class="form-field"><label for="join-name">你的呼号</label><input id="join-name" maxlength="18" required value="${esc(nickname())}" autocomplete="nickname"></div><div class="form-field wide"><label for="join-co">指挥官</label><select id="join-co">${commanderOptions("mechanic")}</select></div></div><div class="form-error" id="join-error"></div><button class="button primary large" type="submit">加入战场 <b>→</b></button></form><div class="room-list" id="available-rooms"></div>`,
+    `<p class="modal-description">${
+      publicMode
+        ? "在房主给你的地址打开本页，输入房间码加入。"
+        : "在房主的服务地址打开本页，输入房间码加入。两台设备需要处于同一局域网。"
+    }</p><form id="join-form"><div class="form-grid"><div class="form-field"><label for="join-code">房间码</label><input id="join-code" maxlength="12" placeholder="例如 AB12CD" required value="${esc(prefill)}" style="text-transform:uppercase" autocomplete="off"></div><div class="form-field"><label for="join-name">你的呼号</label><input id="join-name" maxlength="18" required value="${esc(nickname())}" autocomplete="nickname"></div><div class="form-field wide"><label for="join-co">指挥官</label><select id="join-co">${commanderOptions("mechanic")}</select></div></div><div class="form-error" id="join-error"></div><button class="button primary large" type="submit">加入战场 <b>→</b></button></form><div class="room-list" id="available-rooms"></div>`,
     "JOIN OPERATION / 接入战场",
   );
   $("#join-form").onsubmit = async (event) => {
@@ -1575,10 +1708,19 @@ function joinDialog(prefill = "") {
   };
   api("/api/rooms")
     .then((result) => {
+      publicMode = !!result.publicMode;
       const list = $("#available-rooms");
       if (!list) return;
-      list.innerHTML = result.rooms
-        .filter((r) => r.phase === "lobby")
+      const waiting = (result.rooms || []).filter((r) => r.phase === "lobby");
+      if (!waiting.length) {
+        list.innerHTML = `<p class="muted">${
+          publicMode
+            ? "公网作战不列出公开房间。请向房主索取房间码，在上方输入即可加入。"
+            : "当前没有等待中的房间。房主启动服务并建房后，这里会显示可加入的房间。"
+        }</p>`;
+        return;
+      }
+      list.innerHTML = waiting
         .slice(0, 5)
         .map(
           (r) =>
@@ -1666,14 +1808,15 @@ document.addEventListener("keydown", (event) => {
   }
 });
 window.addEventListener("online", () =>
-  setNetwork(session ? "重新连接房间…" : "局域网服务就绪"),
+  setNetwork(session ? "重新连接房间…" : "作战服务就绪"),
 );
 window.addEventListener("offline", () => setNetwork("网络已断开", true));
 updateResume();
 api("/api/rooms")
   .then((result) => {
+    publicMode = !!result.publicMode;
     serviceURLs = result.urls || [];
-    setNetwork("局域网服务就绪");
+    setNetwork("作战服务就绪");
     const code = new URLSearchParams(location.search).get("room");
     if (code) {
       const normalized = code.trim().toUpperCase();
